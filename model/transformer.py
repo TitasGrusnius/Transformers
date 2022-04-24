@@ -39,6 +39,12 @@ class Transformer(tf.keras.Model):
         for p in self.trainable_variables():
             if p.dim() > 1:
                 p = initializer(shape=p.shape)
+                
+        #------------------------Code Difference: Manar's Guess----------------------
+        #for p in self.parameters():
+        #    if p.dim() > 1:
+        #        nn.init.xavier_uniform_(p)
+
 
     def forward(self, src, mask, query_embed, pos_embed):
         # flatten NxCxHxW to HWxNxC
@@ -54,6 +60,29 @@ class Transformer(tf.keras.Model):
                           pos=pos_embed, query_pos=query_embed)
         return hs.transpose(1, 2), memory.permute(1, 2, 0).view(bs, c, h, w)
 
+    
+class TransformerEncoder(tf.keras.Model):
+    def __init__(self, encoder_layer, num_layers, norm=None):       
+        super().__init__()
+        self.layers = _get_clones(encoder_layer, num_layers)
+        self.num_layers = num_layers     
+        self.norm = norm
+        
+    def forward(self, src,
+                mask = None,
+                src_key_padding_mask = None,
+                pos = None):
+        
+        output = src
+        for layer in self.layers:           
+            output = layer(output, src_mask=mask,
+                           src_key_padding_mask=src_key_padding_mask, pos=pos)
+            
+        if self.norm is not None:
+            output = self.norm(output)
+
+        return output
+    
 
 class TransformerDecoder(tf.keras.Model):
     def __init__(self, decoder_layer, num_layers, norm=None, return_intermediate=False):
@@ -94,15 +123,80 @@ class TransformerDecoder(tf.keras.Model):
             return tf.stack(intermediate)
 
         return output.unsqueeze(0)
-
-## TODO 
-class TransformerEncoder(tf.keras.Model):
-    pass 
-
-## TODO 
+    
+    
 class TransformerEncoderLayer(tf.keras.Model):
-    pass 
+    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1,
+                 activation="relu", normalize_before=False):
+        
+        super().__init__()
+        self.self_attn = tf.keras.layers.MultiHeadAttention(key_dim=d_model, num_heads=nhead, dropout=dropout)
+        # Implementation of Feedforward model
+        self.linear1 = tf.keras.layers.Dense(units=dim_feedforward)
+        self.dropout = f.keras.Dropout(dropout)
+        self.linear2 = tf.keras.layers.Dense(units=d_model)
+        
+        self.norm1 = tf.keras.layers.LayerNormalization(1e-05)
+        self.norm2 = tf.keras.layers.LayerNormalization(1e-05)
+        
+        self.dropout1 = tf.keras.Dropout(dropout)
+        self.dropout2 = tf.keras.Dropout(dropout)
+        
+        self.activation = _get_activation_fn(activation)
+        self.normalize_before = normalize_before
+        
+    def with_pos_embed(self, tensor, pos):
+        return tensor if pos is None else tensor + pos
+    
+    def forward_post(self,
+                     src,
+                     src_mask = None,
+                     src_key_padding_mask = None,
+                     pos = None):
+        
+        q = k = self.with_pos_embed(src, pos)
+        src2 = self.self_attn(q, k, value=src, attn_mask=src_mask,
+                              key_padding_mask=src_key_padding_mask)[0]
+        
+        src = src + self.dropout1(src2)
+        src = self.norm1(src)
+        
+        src2 = self.linear2(self.dropout(self.activation(self.linear1(src))))
+        src = src + self.dropout2(src2)
+        src = self.norm2(src)
+        
+        return src
+    
+    
+    def forward_pre(self, src,
+                    src_mask = None,
+                    src_key_padding_mask = None,
+                    pos = None):
+        
+        src2 = self.norm1(src)
+        q = k = self.with_pos_embed(src2, pos)
+        
+        src2 = self.self_attn(q, k, value=src2, attn_mask=src_mask,
+                              key_padding_mask=src_key_padding_mask)[0]
+        
+        src = src + self.dropout1(src2)
+        src2 = self.norm2(src)
+        src2 = self.linear2(self.dropout(self.activation(self.linear1(src2))))
+        src = src + self.dropout2(src2)
+        
+        return src
+    
+    
+    def forward(self, src,
+                src_mask = None,
+                src_key_padding_mask = None,
+                pos = None):
+        
+        if self.normalize_before:
+            return self.forward_pre(src, src_mask, src_key_padding_mask, pos)
+        return self.forward_post(src, src_mask, src_key_padding_mask, pos)
 
+    
 
 class TransformerDecoderLayer(tf.keras.Model):
     def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1,
