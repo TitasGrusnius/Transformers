@@ -114,16 +114,16 @@ class TransformerDecoderLayer(tf.keras.Model):
 
         # Implementation of Feedforward model
         self.linear1 = tf.keras.layers.Dense(units=dim_feedforward)
-        self.dropout = tf.keras.Dropout(dropout)
+        self.dropout = tf.keras.layers.Dropout(dropout)
         self.linear2 = tf.keras.layers.Dense(units=d_model)
 
-        self.norm1 = tf.keras.layers.LayerNormalization(1e-05)  # epsilon default is different between tensroflow and pytorch
-        self.norm2 = tf.keras.layers.LayerNormalization(1e-05)
-        self.norm3 = tf.keras.layers.LayerNormalization(1e-05)
+        self.norm1 = tf.keras.layers.LayerNormalization(axis=-1, epsilon=1e-05)  # epsilon default is different between tensroflow and pytorch
+        self.norm2 = tf.keras.layers.LayerNormalization(axis=-1, epsilon=1e-05)
+        self.norm3 = tf.keras.layers.LayerNormalization(axis=-1, epsilon=1e-05)
 
-        self.dropout1 = tf.keras.Dropout(dropout)
-        self.dropout2 = tf.keras.Dropout(dropout)
-        self.dropout3 = tf.keras.Dropout(dropout)
+        self.dropout1 = tf.keras.layers.Dropout(dropout)
+        self.dropout2 = tf.keras.layers.Dropout(dropout)
+        self.dropout3 = tf.keras.layers.Dropout(dropout)
 
         self.activation = _get_activation_fn(activation)
         self.normalize_before = normalize_before
@@ -211,7 +211,7 @@ def _get_clones(module, N):
 def _get_activation_fn(activation):
     """Return an activation function given a string"""
     if activation == "relu":
-        return tf.keras.layers.relu
+        return tf.keras.activations.relu
     if activation == "gelu":
         return tf.keras.activations.gelu
     if activation == "glu":
