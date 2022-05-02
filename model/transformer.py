@@ -133,7 +133,7 @@ class TransformerEncoderLayer(tf.keras.Model):
         self.self_attn = tf.keras.layers.MultiHeadAttention(key_dim=d_model, num_heads=nhead, dropout=dropout)
         # Implementation of Feedforward model
         self.linear1 = tf.keras.layers.Dense(units=dim_feedforward)
-        self.dropout = f.keras.Dropout(dropout)
+        self.dropout = tf.keras.Dropout(dropout)
         self.linear2 = tf.keras.layers.Dense(units=d_model)
         
         self.norm1 = tf.keras.layers.LayerNormalization(1e-05)

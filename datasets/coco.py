@@ -2,23 +2,19 @@
 COCO datasets which returns image_id for evaluation.
 Mostly copy-paste from https://github.com/pytorch/vision/blob/13b35ff/references/detection/coco_utils.py
 """
+import os.path
+from PIL import Image
 from pathlib import Path
+from typing import Any, Callable, Optional, Tuple, List
 
-# import torch
-# import torch.utils.data
-# import torchvision
-# from pycocotools import mask as coco_mask
-#
-# import datasets.transforms as T
-
-# tf.data.Datasets
 
 import tensorflow as tf
-pip install tensorflow_datasets
 import tensorflow_datasets as tfds
 from pycocotools import mask as coco_mask
+from pycocotools.coco import COCO
 import tensorflow_addons as tfa
-import datasets.tranforms as T
+import datasets.transforms as T
+
 # READ: unclear if this is from PyTorch or not
 # import datasets.transforms as T
 
@@ -26,20 +22,36 @@ import datasets.tranforms as T
 class CocoDetection(tfds.object_detection.Coco):
     def __init__(self, img_folder, ann_file, transforms, return_masks):
         # previous:
+        # see https://pytorch.org/vision/main/_modules/torchvision/datasets/coco.html#CocoDetection.__getitem__
         # super(CocoDetection, self).__init__(img_folder, ann_file)
         # current:
+        self.root=img_folder
+        self.coco = COCO(ann_file)
+        self.ids = list(sorted(self.coco.imgs.keys()))
+
         super(CocoDetection, self).__init__()
         self._transforms = transforms
         self.prepare = ConvertCocoPolysToMask(return_masks)
 
+    def _load_image(self, id: int) -> Image.Image:
+        path = self.coco.loadImgs(id)[0]["file_name"]
+        return Image.open(os.path.join(self.root, path)).convert("RGB")
+
+    def _load_target(self, id: int) -> List[Any]:
+        return self.coco.loadAnns(self.coco.getAnnIds(id))
+
+    def __len__(self) -> int:
+        return len(self.ids)
+
     def __getitem__(self, idx):
-        img, target = super(CocoDetection, self).__getitem__(idx)
+        img = self._load_image(self.ids[idx])
+        target = self._load_target(self.ids[idx])
         image_id = self.ids[idx]
         target = {'image_id': image_id, 'annotations': target}
         img, target = self.prepare(img, target)
         if self._transforms is not None:
             img, target = self._transforms(img, target)
-        return img, target
+        return img, target['boxes'], target['labels']
 
 
 def convert_coco_poly_to_mask(segmentations, height, width):
@@ -67,7 +79,7 @@ class ConvertCocoPolysToMask(object):
         w, h = image.size
 
         image_id = target["image_id"]
-        image_id = tf.Tensor([image_id])
+        image_id = tf.constant([image_id])
 
         anno = target["annotations"]
 
@@ -75,13 +87,23 @@ class ConvertCocoPolysToMask(object):
 
         boxes = [obj["bbox"] for obj in anno]
         # guard against no boxes via resizing
-        boxes = tf.convert_to_tensor(boxes, dtype=tf.float32).reshape(-1, 4)
-        boxes[:, 2:] += boxes[:, :2]
-        boxes[:, 0::2].clamp_(min=0, max=w)
-        boxes[:, 1::2].clamp_(min=0, max=h)
+        boxes = tf.reshape(tf.convert_to_tensor(boxes, dtype=tf.float32), (-1, 4))
+        # convert to numpy to be able to assign to it; boxes[:, 2:] += boxes[:, :2]
+        boxes_np = boxes.numpy()
+        boxes_np[:, 2:] += boxes_np[:, :2]
+        # convert back to tensor
+        boxes = tf.convert_to_tensor(boxes_np, dtype=tf.float32)
+
+        boxes_np = boxes.numpy()
+        #boxes[:, 0::2].clamp_(min=0, max=w)
+        boxes_np[:, 0::2] = tf.clip_by_value(boxes[:, 0::2], clip_value_min=0, clip_value_max=w)
+        #boxes[:, 1::2].clamp_(min=0, max=h)
+        boxes_np[:, 1::2] = tf.clip_by_value(boxes[:, 1::2], clip_value_min=0, clip_value_max=h)
+        boxes = tf.convert_to_tensor(boxes_np, dtype=tf.float32)
+
 
         classes = [obj["category_id"] for obj in anno]
-        classes = tf.Tensor(classes, dtype=tf.int64)
+        classes = tf.constant(classes, dtype=tf.int64)
 
         if self.return_masks:
             segmentations = [obj["segmentation"] for obj in anno]

@@ -1,41 +1,36 @@
 """
 Transforms and data augmentation for both image + bbox.
 """
-import random
-
 import PIL
-# import torch
-# import torchvision.transforms as T
-# import torchvision.transforms.functional as F
-
+import random
 import tensorflow as tf
 
-from util.box_ops import box_xyxy_to_cxcywh
-from util.misc import interpolate
+from utils.box_ops import box_xyxy_to_cxcywh
+from utils.misc import interpolate
 
 # Unsure of line 243
 
 
 def crop(image, target, region):
     # cropped_image = F.crop(image, *region)
-    cropped_image = tf.image.crop_and_resize(image, *region)
+    i, j, h, w = region
+    cropped_image = tf.image.crop_to_bounding_box(image, offset_height=i, offset_width=j, target_height=h, target_width=w)
 
     target = target.copy()
-    i, j, h, w = region
 
     # should we do something wrt the original size?
-    target["size"] = tf.Tensor([h, w])
+    target["size"] = tf.constant([h, w])
 
     fields = ["labels", "area", "iscrowd"]
 
     if "boxes" in target:
         boxes = target["boxes"]
         max_size = tf.convert_to_tensor([w, h], dtype=tf.float32)
-        cropped_boxes = boxes - tf.convert_to_tensor([j, i, j, i])
-        cropped_boxes = tf.minimum(cropped_boxes.reshape(-1, 2, 2), max_size)
-        cropped_boxes = cropped_boxes.clamp(min=0)
-        area = (cropped_boxes[:, 1, :] - cropped_boxes[:, 0, :]).prod(dim=1)
-        target["boxes"] = cropped_boxes.reshape(-1, 4)
+        cropped_boxes = boxes - tf.convert_to_tensor([j, i, j, i], dtype=tf.float32)
+        cropped_boxes = tf.minimum(tf.reshape(cropped_boxes, (-1, 2, 2)), max_size)
+        cropped_boxes = tf.clip_by_value(cropped_boxes, clip_value_min=0, clip_value_max=tf.math.reduce_max(cropped_boxes))
+        area = tf.math.reduce_prod((cropped_boxes[:, 1, :] - cropped_boxes[:, 0, :]), axis=1)
+        target["boxes"] = tf.reshape(cropped_boxes,(-1, 4))
         target["area"] = area
         fields.append("boxes")
 
@@ -49,7 +44,7 @@ def crop(image, target, region):
         # favor boxes selection when defining which elements to keep
         # this is compatible with previous implementation
         if "boxes" in target:
-            cropped_boxes = target['boxes'].reshape(-1, 2, 2)
+            cropped_boxes = tf.reshape(target['boxes'], (-1, 2, 2))
             keep = tf.reduce_all(cropped_boxes[:, 1, :] > cropped_boxes[:, 0, :], axis=1)
         else:
             keep = target['masks'].flatten(1).any(1)
@@ -68,7 +63,8 @@ def hflip(image, target):
     target = target.copy()
     if "boxes" in target:
         boxes = target["boxes"]
-        boxes = boxes[:, [2, 1, 0, 3]] * tf.convert_to_tensor([-1, 1, -1, 1]) + tf.convert_to_tensor([w, 0, w, 0])
+        boxes_np = boxes.numpy()
+        boxes = boxes_np[:, [2, 1, 0, 3]] * tf.convert_to_tensor([-1, 1, -1, 1]) + tf.convert_to_tensor([w, 0, w, 0])
         target["boxes"] = boxes
 
     if "masks" in target:
@@ -105,6 +101,9 @@ def resize(image, target, size, max_size=None):
             return size[::-1]
         else:
             return get_size_with_aspect_ratio(image_size, size, max_size)
+    
+    if type(image) != PIL.Image.Image:
+        image = tf.keras.preprocessing.image.array_to_img(image)
 
     size = get_size(image.size, size, max_size)
     rescaled_image = tf.image.resize(image, size)
@@ -112,13 +111,13 @@ def resize(image, target, size, max_size=None):
     if target is None:
         return rescaled_image, None
 
-    ratios = tuple(float(s) / float(s_orig) for s, s_orig in zip(rescaled_image.size, image.size))
+    ratios = tuple(float(s) / float(s_orig) for s, s_orig in zip(rescaled_image.shape, image.size))
     ratio_width, ratio_height = ratios
 
     target = target.copy()
     if "boxes" in target:
         boxes = target["boxes"]
-        scaled_boxes = boxes * tf.convert_to_tensor([ratio_width, ratio_height, ratio_width, ratio_height])
+        scaled_boxes = tf.cast(boxes, dtype=tf.float32) * tf.convert_to_tensor([ratio_width, ratio_height, ratio_width, ratio_height], dtype=tf.float32)
         target["boxes"] = scaled_boxes
 
     if "area" in target:
@@ -127,7 +126,7 @@ def resize(image, target, size, max_size=None):
         target["area"] = scaled_area
 
     h, w = size
-    target["size"] = tf.Tensor([h, w])
+    target["size"] = tf.constant([h, w])
 
     if "masks" in target:
         target['masks'] = interpolate(
@@ -150,6 +149,15 @@ def pad(image, target, padding):
     return padded_image, target
 
 
+def pad_labels(images , boxes, labels):
+    nb_bbox = boxes.shape[0]
+
+    boxes = tf.pad(boxes, [[0, 100 - nb_bbox], [0, 0]], mode='CONSTANT', constant_values=0)
+    labels = tf.reshape(labels, (labels.shape[0], 1))
+    labels = tf.pad(labels, [[0, 100 - nb_bbox], [0, 0]], mode='CONSTANT', constant_values=0)
+
+    return images, boxes, labels
+
 class RandomCrop(object):
     def __init__(self, size):
         self.size = size
@@ -167,10 +175,24 @@ class RandomSizeCrop(object):
         self.max_size = max_size
 
     def __call__(self, img: PIL.Image.Image, target: dict):
-        w = random.randint(self.min_size, min(img.width, self.max_size))
-        h = random.randint(self.min_size, min(img.height, self.max_size))
+        if type(img) != PIL.Image.Image:
+            img = tf.keras.preprocessing.image.array_to_img(img)
+        tw = random.randint(self.min_size, min(img.width, self.max_size))
+        th = random.randint(self.min_size, min(img.height, self.max_size))
         # region = T.RandomCrop.get_params(img, [h, w])
-        region = tf.image.random_crop(img, [h, w]).shape
+        h, w = img.height, img.width
+
+        if h + 1 < th or w + 1 < tw:
+            raise ValueError(f"Required crop size {(th, tw)} is larger then input image size {(h, w)}")
+
+        if w == tw and h == th:
+            return 0, 0, h, w
+
+        i = random.randint(0, h - th)
+        j = random.randint(0, w - tw)
+
+        region = i,j,th,tw
+        #region = tf.image.random_crop(img, [h, w, 3]), tf.image.random_crop(img, [h, w, 3]).shape
         return crop(img, target, region)
 
 
@@ -265,7 +287,7 @@ class Normalize(object):
         if "boxes" in target:
             boxes = target["boxes"]
             boxes = box_xyxy_to_cxcywh(boxes)
-            boxes = boxes / tf.Tensor([w, h, w, h], dtype=tf.float32)
+            boxes = boxes / tf.constant([w, h, w, h], dtype=tf.float32)
             target["boxes"] = boxes
         return image, target
 
