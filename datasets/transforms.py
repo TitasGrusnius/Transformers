@@ -196,6 +196,16 @@ class RandomSizeCrop(object):
         return crop(img, target, region)
 
 
+class Resize(object):
+    def __init__(self, new_size):
+        self.new_size = new_size
+
+    def __call__(self, img: PIL.Image.Image, target: dict):
+        if type(img) != PIL.Image.Image:
+            img = tf.keras.preprocessing.image.array_to_img(img)
+
+        return resize(img, target, self.new_size)
+
 class CenterCrop(object):
     def __init__(self, size):
         self.size = size

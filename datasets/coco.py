@@ -18,6 +18,8 @@ import datasets.transforms as T
 # READ: unclear if this is from PyTorch or not
 # import datasets.transforms as T
 
+FIXED_IMAGE_SIZE_W = 400 
+FIXED_IMAGE_SIZE_H = 650 
 
 class CocoDetection(tfds.object_detection.Coco):
     def __init__(self, img_folder, ann_file, transforms, return_masks):
@@ -166,6 +168,7 @@ def make_coco_transforms(image_set):
                     T.RandomResize(scales, max_size=1333),
                 ])
             ),
+            T.Resize((FIXED_IMAGE_SIZE_W, FIXED_IMAGE_SIZE_H)),   # fixed-image size 
             normalize,
         ])
 

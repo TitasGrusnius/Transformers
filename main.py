@@ -52,14 +52,14 @@ def main(args):
 
     # batch dataset
     train_data = train_data.batch(args.batch_size, drop_remainder=True)
-   
-    train_data = train_data.map(lambda imgs, boxes, labels: tf.numpy_function(utils.misc.collate_fn, [imgs, boxes, labels], [tf.float32, tf.float32, tf.int64]))
 
+    #### TRYING TO GET BATCHING TO WORK WITH VARIABLE-SIZED IMAGES BUT NO AVAIL
+    #train_data = train_data.padded_batch(args.batch_size, padded_shapes=([[None], [None], [None]],[],[]), drop_remainder=True)
+    #train_data = train_data.map(lambda imgs, boxes, labels: tf.numpy_function(utils.misc.collate_fn, [imgs, boxes, labels], [tf.float32, tf.float32, tf.int64]))
+
+    # TODO: Display First 3 images in training data with their boxes
     for epoch, (img, box, label) in enumerate(train_data): 
-        print(img.shape)
-        print(box.shape)
-        print(label.shape)
-        image    = tf.keras.preprocessing.image.array_to_img(img[0])
+        image = tf.keras.preprocessing.image.array_to_img(img[0])
         image.show()
         break 
     
