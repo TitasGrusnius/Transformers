@@ -13,6 +13,7 @@ class PositionEmbeddingSine(tf.keras.Model):
     This is a more standard version of the position embedding, very similar to the one
     used by the Attention is all you need paper, generalized to work on images.
     """
+
     def __init__(self, num_pos_feats=64, temperature=10000, normalize=False, scale=None):
         super().__init__()
         self.num_pos_feats = num_pos_feats
@@ -54,6 +55,7 @@ class PositionEmbeddingLearned(tf.keras.Model):
     """
     Absolute pos embedding, learned.
     """
+
     def __init__(self, num_pos_feats=256):
         super().__init__()
         self.row_embed = tf.keras.layers.Embedding(50, num_pos_feats)
@@ -93,5 +95,4 @@ def build_position_encoding(args):
         position_embedding = PositionEmbeddingLearned(N_steps)
     else:
         raise ValueError(f"not supported {args.position_embedding}")
-
     return position_embedding
