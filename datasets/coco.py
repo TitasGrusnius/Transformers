@@ -18,7 +18,7 @@ import datasets.transforms as T
 # READ: unclear if this is from PyTorch or not
 # import datasets.transforms as T
 
-FIXED_IMAGE_SIZE_W = 400 
+FIXED_IMAGE_SIZE_W = 500 
 FIXED_IMAGE_SIZE_H = 650 
 
 class CocoDetection(tfds.object_detection.Coco):

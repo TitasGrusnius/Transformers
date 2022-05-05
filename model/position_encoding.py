@@ -2,53 +2,64 @@
 Various positional encodings for the transformer.
 """
 import math
-# import torch
-# from torch import nn
+import sys
+import numpy as np
+from numpy import dtype 
+
+sys.path.insert(1, '/Users/ma/Documents/Brown/SP22/Deep_Learning/Transformers/')
+
+
 import tensorflow as tf
-from util.misc import NestedTensor
+from utils.misc import NestedTensor
 
 
 class PositionEmbeddingSine(tf.keras.Model):
-    """
-    This is a more standard version of the position embedding, very similar to the one
-    used by the Attention is all you need paper, generalized to work on images.
-    """
 
-    def __init__(self, num_pos_feats=64, temperature=10000, normalize=False, scale=None):
-        super().__init__()
-        self.num_pos_feats = num_pos_feats
+    def __init__(self, num_pos_features=64, temperature=10000,
+                 normalize=False, scale=None, eps=1e-6, **kwargs):
+        super().__init__(**kwargs)
+
+        self.num_pos_features = num_pos_features
         self.temperature = temperature
         self.normalize = normalize
         if scale is not None and normalize is False:
-            raise ValueError("normalize should be True if scale is passed")
+            raise ValueError('normalize should be True if scale is passed')
         if scale is None:
-            scale = 2 * math.pi
+            scale = 2 * np.pi
         self.scale = scale
+        self.eps = eps
 
-    def forward(self, tensor_list: NestedTensor):
+
+    def call(self, tensor_list):
         x = tensor_list.tensors
         mask = tensor_list.mask
-        assert mask is not None
-        not_mask = ~mask
-        y_embed = not_mask.cumsum(1, dtype=torch.float32)
-        x_embed = not_mask.cumsum(2, dtype=torch.float32)
+        not_mask = tf.cast(~tf.cast(mask, tf.int32), tf.float32)
+        y_embed = tf.math.cumsum(not_mask, axis=1)
+        x_embed = tf.math.cumsum(not_mask, axis=2)
+
         if self.normalize:
-            eps = 1e-6
-            y_embed = y_embed / (y_embed[:, -1:, :] + eps) * self.scale
-            x_embed = x_embed / (x_embed[:, :, -1:] + eps) * self.scale
+            y_embed = y_embed / (y_embed[:, -1:, :] + self.eps) * self.scale
+            x_embed = x_embed / (x_embed[:, :, -1:] + self.eps) * self.scale
 
-        # dim_t = torch.arange(self.num_pos_feats, dtype=torch.float32, device=x.device)
-        # tf.range has no argument for device
-        dim_t = tf.range(self.num_pos_feats, dtype=tf.float32)
-        dim_t = self.temperature ** (2 * (dim_t // 2) / self.num_pos_feats)
+        dim_t = tf.range(self.num_pos_features, dtype=tf.float32)
+        dim_t = self.temperature ** (2 * (dim_t // 2) / self.num_pos_features)
 
-        pos_x = x_embed[:, :, :, None] / dim_t
-        pos_y = y_embed[:, :, :, None] / dim_t
-        pos_x = tf.stack((pos_x[:, :, :, 0::2].sin(), pos_x[:, :, :, 1::2].cos()), axis=4).reshape(3)
-        pos_y = tf.stack((pos_y[:, :, :, 0::2].sin(), pos_y[:, :, :, 1::2].cos()), dim=4).reshape(3)
-        # pos = tf.concat((pos_y, pos_x), axis=3).permute(0, 3, 1, 2)
-        pos = tf.concat((pos_y, pos_x), axis=3).transpose(perm=[0, 3, 1, 2])
-        return pos
+        pos_x = x_embed[..., tf.newaxis] / dim_t
+        pos_y = y_embed[..., tf.newaxis] / dim_t
+
+        pos_x = tf.stack([tf.math.sin(pos_x[..., 0::2]),
+                          tf.math.cos(pos_x[..., 1::2])], axis=4)
+
+        pos_y = tf.stack([tf.math.sin(pos_y[..., 0::2]),
+                          tf.math.cos(pos_y[..., 1::2])], axis=4)
+        
+
+        shape = [tf.shape(pos_x)[i] for i in range(3)] + [-1]
+        pos_x = tf.reshape(pos_x, shape)
+        pos_y = tf.reshape(pos_y, shape)
+
+        pos_emb = tf.concat([pos_y, pos_x], axis=3)
+        return pos_emb
 
 
 class PositionEmbeddingLearned(tf.keras.Model):
@@ -68,7 +79,7 @@ class PositionEmbeddingLearned(tf.keras.Model):
         self.row_embed = tf.random.normal(self.row_embed.shape)
         self.col_embed = tf.random.normal(self.col_embed.shape)
 
-    def forward(self, tensor_list: NestedTensor):
+    def call(self, tensor_list: NestedTensor):
         x = tensor_list.tensors
         h, w = x.shape[-2:]
         # i = torch.arange(w, device=x.device)
