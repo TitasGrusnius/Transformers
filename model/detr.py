@@ -71,10 +71,10 @@ class DETR(tf.keras.Model):
         features, pos = self.backbone(samples)
         src, mask = features[-1].decompose()
         assert mask is not None
-        hs = self.transformer(self.input_proj(src), mask, self.query_embed.weights, pos[-1], training=training)[0]
+        hs = self.transformer(self.input_proj(src), mask, self.query_embed.weights[0], pos[-1], training=training)[0]
 
         outputs_class = self.class_embed(hs)
-        outputs_coord = self.bbox_embed(hs).sigmoid()
+        outputs_coord = tf.sigmoid(self.bbox_embed(hs))
         out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
         if self.aux_loss:
             out['aux_outputs'] = self._set_aux_loss(outputs_class, outputs_coord)
@@ -89,9 +89,7 @@ class DETR(tf.keras.Model):
         return [{'pred_logits': a, 'pred_boxes': b}
                 for a, b in zip(outputs_class[:-1], outputs_coord[:-1])]
 
-#TJ-DONE
-#TJ-Not sure about this subclassing but I think they're equivalent
-class SetCriterion(tf.Module):
+class SetCriterion(tf.keras.Model):
     """ This class computes the loss for DETR.
     The process happens in two steps:
         1) we compute hungarian assignment between ground truth boxes and the outputs of the model
@@ -112,7 +110,7 @@ class SetCriterion(tf.Module):
         self.matcher = matcher
         self.weight_dict = weight_dict
         self.eos_coef = eos_coef
-        self.losses = losses
+        self.t_losses = losses
         empty_weight = tf.ones(self.num_classes + 1)
         empty_weight_np = empty_weight.numpy()
         empty_weight_np[-1] = self.eos_coef
@@ -203,7 +201,7 @@ class SetCriterion(tf.Module):
         return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)
 
     #TJ-DONE WITH CAVEATS
-    def forward(self, outputs, targets):
+    def call(self, outputs, boxes, labels):
         """ This performs the loss computation.
         Parameters:
              outputs: dict of tensors, see the output specification of the model for the format
@@ -213,7 +211,7 @@ class SetCriterion(tf.Module):
         outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs'}
 
         # Retrieve the matching between the outputs of the last layer and the targets
-        indices = self.matcher(outputs_without_aux, targets)
+        indices = self.matcher(outputs_without_aux, boxes, labels)
 
         # Compute the average number of target boxes accross all nodes, for normalization purposes
         num_boxes = sum(len(t["labels"]) for t in targets)
@@ -225,14 +223,14 @@ class SetCriterion(tf.Module):
 
         # Compute all the requested losses
         losses = {}
-        for loss in self.losses:
+        for loss in self.t_losses:
             losses.update(self.get_loss(loss, outputs, targets, indices, num_boxes))
 
         # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
         if 'aux_outputs' in outputs:
             for i, aux_outputs in enumerate(outputs['aux_outputs']):
                 indices = self.matcher(aux_outputs, targets)
-                for loss in self.losses:
+                for loss in self.t_losses:
                     if loss == 'masks':
                         # Intermediate masks losses are too costly to compute, we ignore them.
                         continue
@@ -248,11 +246,11 @@ class SetCriterion(tf.Module):
 
 #TJ-DONE
 #TJ-Not sure about this subclassing but I think they're equivalent
-class PostProcess(tf.Module):
+class PostProcess(tf.keras.Model):
     """ This module converts the model's output into the format expected by the coco api"""
     #TJ-DONE
 #    @tf.stop_gradient()
-    def forward(self, outputs, target_sizes):
+    def call(self, outputs, target_sizes):
         """ Perform the computation
         Parameters:
             outputs: raw outputs of the model
@@ -279,25 +277,22 @@ class PostProcess(tf.Module):
 
         return results
 
-#TJ-Done, but ditto subclassing note above
-class MLP(tf.Module):
+
+class MLP(tf.keras.Model):
     """ Very simple multi-layer perceptron (also called FFN)"""
 
-    #TJ-DONE with caveats
     def __init__(self, input_dim, hidden_dim, output_dim, num_layers):
         super().__init__()
         self.num_layers = num_layers
         h = [hidden_dim] * (num_layers - 1)
-        #TJ-not sure about this, trying to mimic functionality of nn.ModuleList
-        self.layers = [tf.keras.layers.Dense(k) for n, k in zip([input_dim] + h, h + [output_dim])]
+        self.t_layers = [tf.keras.layers.Dense(k) for n, k in zip([input_dim] + h, h + [output_dim])]
 
-    #DONE
-    def forward(self, x):
-        for i, layer in enumerate(self.layers):
+    def call(self, x):
+        for i, layer in enumerate(self.t_layers):
             x = tf.nn.relu(layer(x)) if i < self.num_layers - 1 else layer(x)
         return x
 
-#TJ-DONE
+
 def build(args):
     # the `num_classes` naming here is somewhat misleading.
     # it indeed corresponds to `max_obj_id + 1`, where max_obj_id

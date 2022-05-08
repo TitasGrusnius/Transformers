@@ -8,7 +8,6 @@ from numpy import dtype
 
 sys.path.insert(1, '/Users/ma/Documents/Brown/SP22/Deep_Learning/Transformers/')
 
-
 import tensorflow as tf
 from utils.misc import NestedTensor
 

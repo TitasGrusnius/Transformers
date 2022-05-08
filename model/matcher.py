@@ -3,12 +3,35 @@
 Modules to compute the matching cost and solve the corresponding LSAP.
 """
 import sys
+import numpy as np
+from matplotlib.pyplot import axis
 sys.path.insert(1, '/Users/ma/Documents/Brown/SP22/Deep_Learning/Transformers/')
 
 from scipy.optimize import linear_sum_assignment
 from utils.box_ops import box_cxcywh_to_xyxy, generalized_box_iou
 
 import tensorflow as tf 
+
+def np_tf_linear_sum_assignment(matrix):
+    print(matrix.shape)
+    indices = linear_sum_assignment(matrix)
+    target_indices = indices[0]
+    pred_indices = indices[1]
+
+    #print(matrix.shape, target_indices, pred_indices)
+
+    target_selector = np.zeros(matrix.shape[0])
+    target_selector[target_indices] = 1
+    target_selector = target_selector.astype(np.bool)
+
+    pred_selector = np.zeros(matrix.shape[1])
+    pred_selector[pred_indices] = 1
+    pred_selector = pred_selector.astype(np.bool)
+
+    #print('target_indices', target_indices)
+    #print("pred_indices", pred_indices)
+
+    return [target_indices, pred_indices, target_selector, pred_selector]
 
 class HungarianMatcher(tf.keras.Model):
     """This class computes an assignment between the targets and the predictions of the network
@@ -31,7 +54,7 @@ class HungarianMatcher(tf.keras.Model):
         assert cost_class != 0 or cost_bbox != 0 or cost_giou != 0, "all costs cant be 0"
 
     #@tf.no_gradient()
-    def forward(self, outputs, targets):
+    def call(self, outputs, boxes, labels):
         """ Performs the matching
         Params:
             outputs: This is a dict that contains at least these entries:
@@ -49,32 +72,40 @@ class HungarianMatcher(tf.keras.Model):
                 len(index_i) = len(index_j) = min(num_queries, num_target_boxes)
         """
         bs, num_queries = outputs["pred_logits"].shape[:2]
+        bs, num_queries, num_classes =  outputs["pred_logits"].shape 
 
         # We flatten to compute the cost matrices in a batch
-        out_prob = outputs["pred_logits"].flatten(0, 1).softmax(-1)  # [batch_size * num_queries, num_classes]
-        out_bbox = outputs["pred_boxes"].flatten(0, 1)  # [batch_size * num_queries, 4]
+        out_prob = tf.nn.softmax(tf.reshape(outputs["pred_logits"], (bs*num_queries, num_classes)), axis=-1)  # [batch_size * num_queries, num_classes]
+        out_bbox = tf.reshape(outputs["pred_boxes"], (bs*num_queries, 4))  # [batch_size * num_queries, 4]
 
         # Also concat the target labels and boxes
-        tgt_ids = tf.concat([v["labels"] for v in targets])
-        tgt_bbox = tf.concat([v["boxes"] for v in targets])
+        tgt_ids = tf.concat([v for v in labels], axis=0)
+        tgt_bbox = tf.concat([v for v in boxes], axis=0)
 
         # Compute the classification cost. Contrary to the loss, we don't use the NLL,
         # but approximate it in 1 - proba[target class].
         # The 1 is a constant that doesn't change the matching, it can be ommitted.
-        cost_class = tf.stop_gradient(-out_prob[:, tgt_ids])
+        cost_class = tf.stop_gradient(-tf.gather(out_prob, tgt_ids, axis=1))
 
         # Compute the L1 cost between boxes
-        cost_bbox = tf.stop_gradient(tf.norm(out_bbox, tgt_bbox, ord='fro'))
+        cost_bbox =  tf.stop_gradient(tf.norm(out_bbox - tgt_bbox, ord=1, axis=-1))
 
         # Compute the giou cost betwen boxes
         cost_giou = tf.stop_gradient(-generalized_box_iou(box_cxcywh_to_xyxy(out_bbox), box_cxcywh_to_xyxy(tgt_bbox)))
 
         # Final cost matrix
         C = tf.stop_gradient(self.cost_bbox * cost_bbox + self.cost_class * cost_class + self.cost_giou * cost_giou)
-        C =  tf.stop_gradient(C.view(bs, num_queries, -1).cpu())
+        C =  tf.stop_gradient(tf.reshape(C, (bs, num_queries, -1)))
 
-        sizes = tf.stop_gradient([len(v["boxes"]) for v in targets])
-        indices = tf.stop_gradient([linear_sum_assignment(c[i]) for i, c in enumerate(C.split(sizes, -1))])
+        sizes = tf.stop_gradient([len(v) for v in boxes])
+
+        # selectors = tf.numpy_function(np_tf_linear_sum_assignment, [C], [tf.int64, tf.int64, tf.bool, tf.bool] )
+        # target_indices = selectors[0]
+        # pred_indices = selectors[1]
+        # target_selector = selectors[2]
+        # pred_selector = selectors[3]
+
+        indices = tf.stop_gradient([linear_sum_assignment(c[i]) for i, c in enumerate(tf.split(C, sizes, axis=-1))])
         return tf.stop_gradient([(tf.convert_to_tensor(i, dtype=tf.int64), tf.convert_to_tensor(j, dtype=tf.int64)) for i, j in indices])
 
 

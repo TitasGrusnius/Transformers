@@ -7,6 +7,7 @@ from random import sample, shuffle
 from datasets.transforms import pad_labels
 
 from model.detr import build 
+from engine import train_one_epoch 
 
 import PIL
 import matplotlib.pyplot as plt
@@ -115,9 +116,20 @@ def main(args):
         break 
     
     #### Training Loop #### 
+    # Optimizers
+    backbone_optimizer = tf.keras.optimizers.Adam(learning_rate=args.lr_backbone, clipnorm=args.clip_max_norm)
+    transformers_optimizer = tf.keras.optimizers.Adam(learning_rate=args.lr, clipnorm=args.clip_max_norm)
+    fnn_optimizer = tf.keras.optimizers.Adam(learning_rate=args.lr, clipnorm=args.clip_max_norm)
+
+    optimizers = {
+        'backbone': backbone_optimizer,
+        'transformer': transformers_optimizer,
+        'fnn': fnn_optimizer}
+
     model, criterion, postprocess = build(args)
     for epoch, (img, box, label) in enumerate(train_data): 
-        model(img)
+        train_one_epoch(model, criterion, optimizers, img, box, label)
+        break
 
     #### Testing Loop #### 
 
