@@ -3,17 +3,19 @@ Backbone modules.
 """
 from collections import OrderedDict
 
+import sys
+from turtle import back
+from xml.etree.ElementInclude import include
+sys.path.insert(1, '/Users/ma/Documents/Brown/SP22/Deep_Learning/Transformers/')
+
 import tensorflow as tf
-# import torch.nn.functional as F
-# import torchvision
-# from torch import nn
-# from torchvision.models._utils import IntermediateLayerGetter
 from typing import Dict, List
 
-from util.misc import NestedTensor, is_main_process
-
+from utils.misc import NestedTensor, is_main_process
 from .position_encoding import build_position_encoding
 
+# TODO: 
+# - check how to to set train backbone to false
 
 class FrozenBatchNorm2d(tf.keras.Model):
     """
@@ -45,7 +47,7 @@ class FrozenBatchNorm2d(tf.keras.Model):
             state_dict, prefix, local_metadata, strict,
             missing_keys, unexpected_keys, error_msgs)
 
-    def forward(self, x):
+    def call(self, x):
         # move reshapes to the beginning
         # to make it fuser-friendly
         # tf.constant
@@ -63,29 +65,36 @@ class BackboneBase(tf.keras.Model):
 
     def __init__(self, backbone: tf.keras.Model, train_backbone: bool, num_channels: int, return_interm_layers: bool):
         super().__init__()
-        for name, parameter in backbone.named_parameters():
-            if not train_backbone or 'layer2' not in name and 'layer3' not in name and 'layer4' not in name:
-                parameter.requires_grad_(False)
-        if return_interm_layers:
-            return_layers = {"layer1": "0", "layer2": "1", "layer3": "2", "layer4": "3"}
-        else:
-            return_layers = {'layer4': "0"}
+        # TODO: there is not equivalent to requires_grad 
+        for layer in backbone.layers:
+            if not train_backbone or layer.name.startswith('bn'): # or 'layer2' not in layer.name and 'layer3' not in layer.name and 'layer4' not in layer.name
+                layer.trainable = False # see https://stackoverflow.com/questions/67885869/how-to-freeze-batch-norm-layers-during-transfer-learning
+                #.requires_grad_(False)
+        # if return_interm_layers:
+        #     return_layers = {"layer1": "0", "layer2": "1", "layer3": "2", "layer4": "3"}
+        # else:
+        #     return_layers = {'layer4': "0"}
         # self.body = IntermediateLayerGetter(backbone, return_layers=return_layers)
         # Titas guess for below: I couldn't find a direct version of IntermediateLayerGetter in Tensorflow, but searched
         # online and found that model.get_layer(layer_name).outputs returns intermediate layers
-        self.body = backbone.get_layer(return_layers.keys()).output
+        # self.body = []
+        # for layer in backbone.layers:
+        #     self.body.append(backbone.get_layer(name=layer.name))
+        
+        self.body = backbone
         self.num_channels = num_channels
 
-    def forward(self, tensor_list: NestedTensor):
+    def call(self, tensor_list: NestedTensor):
         xs = self.body(tensor_list.tensors)
         out: Dict[str, NestedTensor] = {}
-        for name, x in xs.items():
-            m = tensor_list.mask
-            assert m is not None
-            # mask = F.interpolate(m[None].float(), size=x.shape[-2:]).to(tf.bool)[0]
-            mask = tf.image.resize(m[None].float(), size=x.shape[-2:])
-            mask = tf.cast(mask, tf.bool)[0]
-            out[name] = NestedTensor(x, mask)
+        m = tensor_list.mask
+        assert m is not None
+        masks = tf.cast(m, tf.int32)
+        masks = tf.expand_dims(masks, -1)
+        masks = tf.compat.v1.image.resize_nearest_neighbor(masks, tf.shape(xs)[1:3], align_corners=False, half_pixel_centers=False)
+        masks = tf.squeeze(masks, -1)
+        masks = tf.cast(masks, tf.bool)
+        out["layer4"] = NestedTensor(xs, masks)
         return out
 
 
@@ -95,25 +104,25 @@ class Backbone(BackboneBase):
                  train_backbone: bool,
                  return_interm_layers: bool,
                  dilation: bool):
-        backbone = getattr(torchvision.models, name)(
-            replace_stride_with_dilation=[False, False, dilation],
-            pretrained=is_main_process(), norm_layer=FrozenBatchNorm2d)
+        
+        print(getattr(tf.keras.applications, name))
+        backbone = getattr(tf.keras.applications, name).ResNet50(include_top=False, weights='imagenet')
         num_channels = 512 if name in ('resnet18', 'resnet34') else 2048
         super().__init__(backbone, train_backbone, num_channels, return_interm_layers)
 
 
 class Joiner(tf.keras.Sequential):
     def __init__(self, backbone, position_embedding):
-        super().__init__(backbone, position_embedding)
+        super().__init__([backbone, position_embedding])
 
-    def forward(self, tensor_list: NestedTensor):
-        xs = self[0](tensor_list)
+    def call(self, tensor_list: NestedTensor):
+        xs = self.layers[0](tensor_list)
         out: List[NestedTensor] = []
         pos = []
         for name, x in xs.items():
             out.append(x)
             # position encoding
-            pos.append(self[1](x).to(x.tensors.dtype))
+            pos.append(tf.cast(self.layers[1](x), x.tensors.dtype))
 
         return out, pos
 

@@ -10,20 +10,21 @@ from torch import nn
 
 import tensorflow as tf
 
+import sys
+sys.path.insert(1, '/Users/ma/Documents/Brown/SP22/Deep_Learning/Transformers/')
+
 #TJ-not sure how to deal with all of these imports
-from util import box_ops
-from util.misc import (NestedTensor, nested_tensor_from_tensor_list,
+from utils import box_ops
+from utils.misc import (NestedTensor, nested_tensor_from_tensor_list,
                        accuracy, get_world_size, interpolate,
                        is_dist_avail_and_initialized)
 
 from .backbone import build_backbone
 from .matcher import build_matcher
-from .segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
-                           dice_loss, sigmoid_focal_loss)
 from .transformer import build_transformer
 
 #TJ-Not sure about this subclassing but I think they're equivalent
-class DETR(tf.Module):
+class DETR(tf.keras.Model):
     """ This is the DETR module that performs object detection """
     #TJ-DONE with caveats
     def __init__(self, backbone, transformer, num_classes, num_queries, aux_loss=False):
@@ -42,14 +43,14 @@ class DETR(tf.Module):
         hidden_dim = transformer.d_model
         self.class_embed = tf.keras.layers.Dense(num_classes + 1)
         self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
-        self.query_embed = tf.keras.layers.Embedding(num_queries, hidden_dim)
-        #TJ-not sure if i converted conv2d same but we'll try
+        self.query_embed = tf.keras.layers.Embedding(num_queries, hidden_dim, embeddings_initializer="uniform")
+        self.query_embed.build(input_shape=None)
         self.input_proj = tf.keras.layers.Conv2D(hidden_dim, kernel_size=1)
         self.backbone = backbone
         self.aux_loss = aux_loss
 
     #TJ-DONE 
-    def forward(self, samples: NestedTensor):
+    def call(self, samples: NestedTensor, training=False):
         """ The forward expects a NestedTensor, which consists of:
                - samples.tensor: batched images, of shape [batch_size x 3 x H x W]
                - samples.mask: a binary mask of shape [batch_size x H x W], containing 1 on padded pixels
@@ -66,11 +67,11 @@ class DETR(tf.Module):
         """
         if isinstance(samples, (list, tf.Tensor)):
             samples = nested_tensor_from_tensor_list(samples)
+        
         features, pos = self.backbone(samples)
-
         src, mask = features[-1].decompose()
         assert mask is not None
-        hs = self.transformer(self.input_proj(src), mask, self.query_embed.weight, pos[-1])[0]
+        hs = self.transformer(self.input_proj(src), mask, self.query_embed.weights, pos[-1], training=training)[0]
 
         outputs_class = self.class_embed(hs)
         outputs_coord = self.bbox_embed(hs).sigmoid()
@@ -80,7 +81,7 @@ class DETR(tf.Module):
         return out
 
     #TJ-NOT DONE, not sure what this decorator should be
-    @torch.jit.unused
+    #@torch.jit.unused
     def _set_aux_loss(self, outputs_class, outputs_coord):
         # this is a workaround to make torchscript happy, as torchscript
         # doesn't support dictionary with non-homogeneous values, such
@@ -112,9 +113,12 @@ class SetCriterion(tf.Module):
         self.weight_dict = weight_dict
         self.eos_coef = eos_coef
         self.losses = losses
-        empty_weight = tf.ones_like(self.num_classes + 1)
-        empty_weight[-1] = self.eos_coef
-        self.register_buffer('empty_weight', empty_weight)
+        empty_weight = tf.ones(self.num_classes + 1)
+        empty_weight_np = empty_weight.numpy()
+        empty_weight_np[-1] = self.eos_coef
+        empty_weight = tf.convert_to_tensor(empty_weight_np, dtype=tf.float32)
+        empty_weight = tf.constant(empty_weight)
+       # self.register_buffer('empty_weight', empty_weight)
 
     #TJ-DONE
     def loss_labels(self, outputs, targets, indices, num_boxes, log=True):
@@ -138,17 +142,17 @@ class SetCriterion(tf.Module):
         return losses
 
     #TJ-DONE
-    @tf.stop_gradient()
+    #@tf.stop_gradient()
     def loss_cardinality(self, outputs, targets, indices, num_boxes):
         """ Compute the cardinality error, ie the absolute error in the number of predicted non-empty boxes
         This is not really a loss, it is intended for logging purposes only. It doesn't propagate gradients
         """
-        pred_logits = outputs['pred_logits']
-        tgt_lengths = tf.convert_to_tensor([len(v["labels"]) for v in targets])
+        pred_logits = tf.stop_gradient(outputs['pred_logits'])
+        tgt_lengths = tf.stop_gradient(tf.convert_to_tensor([len(v["labels"]) for v in targets]))
         # Count the number of predictions that are NOT "no-object" (which is the last class)
-        card_pred = (pred_logits.argmax(-1) != pred_logits.shape[-1] - 1).sum(1)
-        card_err = tf.math.reduce_mean(tf.abs(card_pred.float()-tgt_lengths.float()))
-        losses = {'cardinality_error': card_err}
+        card_pred = tf.stop_gradient((pred_logits.argmax(-1) != pred_logits.shape[-1] - 1).sum(1))
+        card_err = tf.stop_gradient(tf.math.reduce_mean(tf.abs(card_pred.float()-tgt_lengths.float())))
+        losses = tf.stop_gradient({'cardinality_error': card_err})
         return losses
 
     #TJ-DONE
@@ -171,36 +175,6 @@ class SetCriterion(tf.Module):
             box_ops.box_cxcywh_to_xyxy(src_boxes),
             box_ops.box_cxcywh_to_xyxy(target_boxes)))
         losses['loss_giou'] = loss_giou.sum() / num_boxes
-        return losses
-
-    #TJ-DONE (unchanged, I think this is good as is)
-    def loss_masks(self, outputs, targets, indices, num_boxes):
-        """Compute the losses related to the masks: the focal loss and the dice loss.
-           targets dicts must contain the key "masks" containing a tensor of dim [nb_target_boxes, h, w]
-        """
-        assert "pred_masks" in outputs
-
-        src_idx = self._get_src_permutation_idx(indices)
-        tgt_idx = self._get_tgt_permutation_idx(indices)
-        src_masks = outputs["pred_masks"]
-        src_masks = src_masks[src_idx]
-        masks = [t["masks"] for t in targets]
-        # TODO use valid to mask invalid areas due to padding in loss
-        target_masks, valid = nested_tensor_from_tensor_list(masks).decompose()
-        target_masks = target_masks.to(src_masks)
-        target_masks = target_masks[tgt_idx]
-
-        # upsample predictions to the target size
-        src_masks = interpolate(src_masks[:, None], size=target_masks.shape[-2:],
-                                mode="bilinear", align_corners=False)
-        src_masks = src_masks[:, 0].flatten(1)
-
-        target_masks = target_masks.flatten(1)
-        target_masks = target_masks.view(src_masks.shape)
-        losses = {
-            "loss_mask": sigmoid_focal_loss(src_masks, target_masks, num_boxes),
-            "loss_dice": dice_loss(src_masks, target_masks, num_boxes),
-        }
         return losses
 
     #TJ-DONE
@@ -277,7 +251,7 @@ class SetCriterion(tf.Module):
 class PostProcess(tf.Module):
     """ This module converts the model's output into the format expected by the coco api"""
     #TJ-DONE
-    @tf.stop_gradient()
+#    @tf.stop_gradient()
     def forward(self, outputs, target_sizes):
         """ Perform the computation
         Parameters:
@@ -286,22 +260,22 @@ class PostProcess(tf.Module):
                           For evaluation, this must be the original image size (before any data augmentation)
                           For visualization, this should be the image size after data augment, but before padding
         """
-        out_logits, out_bbox = outputs['pred_logits'], outputs['pred_boxes']
+        out_logits, out_bbox = tf.stop_gradient(outputs['pred_logits'], outputs['pred_boxes'])
 
         assert len(out_logits) == len(target_sizes)
         assert target_sizes.shape[1] == 2
 
-        prob = tf.nn.softmax(out_logits, axis=-1)
-        scores, labels = prob[..., :-1].max(-1)
+        prob = tf.stop_gradient(tf.nn.softmax(out_logits, axis=-1))
+        scores, labels = tf.stop_gradient(prob[..., :-1].max(-1))
 
         # convert to [x0, y0, x1, y1] format
-        boxes = box_ops.box_cxcywh_to_xyxy(out_bbox)
+        boxes = tf.stop_gradient(box_ops.box_cxcywh_to_xyxy(out_bbox))
         # and from relative [0, 1] to absolute [0, height] coordinates
-        img_h, img_w = target_sizes.unbind(1)
-        scale_fct = tf.stack([img_w, img_h, img_w, img_h], axis=1)
-        boxes = boxes * scale_fct[:, None, :]
+        img_h, img_w = tf.stop_gradient(target_sizes.unbind(1))
+        scale_fct = tf.stop_gradient(tf.stack([img_w, img_h, img_w, img_h], axis=1))
+        boxes = tf.stop_gradient(boxes * scale_fct[:, None, :])
 
-        results = [{'scores': s, 'labels': l, 'boxes': b} for s, l, b in zip(scores, labels, boxes)]
+        results = tf.stop_gradient([{'scores': s, 'labels': l, 'boxes': b} for s, l, b in zip(scores, labels, boxes)])
 
         return results
 
@@ -352,14 +326,11 @@ def build(args):
         num_queries=args.num_queries,
         aux_loss=args.aux_loss,
     )
-    if args.masks:
-        model = DETRsegm(model, freeze_detr=(args.frozen_weights is not None))
+    
     matcher = build_matcher(args)
     weight_dict = {'loss_ce': 1, 'loss_bbox': args.bbox_loss_coef}
     weight_dict['loss_giou'] = args.giou_loss_coef
-    if args.masks:
-        weight_dict["loss_mask"] = args.mask_loss_coef
-        weight_dict["loss_dice"] = args.dice_loss_coef
+  
     # TODO this is a hack
     if args.aux_loss:
         aux_weight_dict = {}
@@ -372,12 +343,8 @@ def build(args):
         losses += ["masks"]
     criterion = SetCriterion(num_classes, matcher=matcher, weight_dict=weight_dict,
                              eos_coef=args.eos_coef, losses=losses)
-    criterion.to(device)
+    # TODO: buffers to GPU ? 
+    #criterion.to(device)
     postprocessors = {'bbox': PostProcess()}
-    if args.masks:
-        postprocessors['segm'] = PostProcessSegm()
-        if args.dataset_file == "coco_panoptic":
-            is_thing_map = {i: i <= 90 for i in range(201)}
-            postprocessors["panoptic"] = PostProcessPanoptic(is_thing_map, threshold=0.85)
-
+   
     return model, criterion, postprocessors
