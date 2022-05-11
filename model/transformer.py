@@ -6,82 +6,53 @@ Copy-paste from torch.nn.Transformer with modifications:
     * decoder returns a stack of activations from all decoding layers
 """
 import copy
-from typing import Optional, List
-
 import tensorflow as tf 
 
 class Transformer(tf.keras.Model):
     def __init__(self, d_model=256, nhead=8, num_encoder_layers=6,
                  num_decoder_layers=6, dim_feedforward=2048, dropout=0.1,
                  activation="relu", normalize_before=False,
-                 return_intermediate_dec=False):
-        super().__init__()
+                 return_intermediate_dec=False, **kwargs):
+        super().__init__(kwargs)
 
         encoder_layer = TransformerEncoderLayer(d_model, nhead, dim_feedforward,
-                                                dropout, activation, normalize_before)
+                                                 dropout, activation, normalize_before)
         encoder_norm = tf.keras.layers.LayerNormalization(axis=-1, epsilon=1e-05) if normalize_before else None
         self.encoder = TransformerEncoder(encoder_layer, num_encoder_layers, encoder_norm)
-
+                                     
         decoder_layer = TransformerDecoderLayer(d_model, nhead, dim_feedforward,
                                                 dropout, activation, normalize_before)
         decoder_norm = tf.keras.layers.LayerNormalization(axis=-1, epsilon=1e-05)
         self.decoder = TransformerDecoder(decoder_layer, num_decoder_layers, decoder_norm,
                                           return_intermediate=return_intermediate_dec)
 
-        # self._reset_parameters()
-
         self.d_model = d_model
         self.nhead = nhead
 
-    # def _reset_parameters(self):
-    #     # Uniform Xavier 
-    #     initializer = tf.keras.initializers.GlorotUniform()
-    #     initialized_variables = []
-    #     for p in self.trainable_variables:
-    #         if p.dim() > 1:
-    #             p = initializer(shape=p.shape)
-    #             initialized_variables.append(p)
-        
-    #     self.trainable_variables = initialized_variables
-    #     #------------------------Code Difference: Manar's Guess----------------------
-    #     #for p in self.parameters():
-    #     #    if p.dim() > 1:
-    #     #        nn.init.xavier_uniform_(p)
-
 
     def call(self, src, mask, query_embed, pos_embed, training=False):
-        # flatten NxCxHxW to HWxNxC
-        print(src.shape)
-        bs, c, h, w = src.shape
+
+        bs, h, w, c = src.shape
         src = tf.reshape(src, [bs, -1, self.d_model])
         src = tf.transpose(src, [1, 0, 2])
 
-        #pos_embed = pos_embed.flatten(2).permute(2, 0, 1)
         pos_embed = tf.reshape(pos_embed, [bs, -1, self.d_model])
         pos_embed = tf.transpose(pos_embed, [1, 0, 2])
 
-        #query_embed = query_embed.unsqueeze(1).repeat(1, bs, 1)
-        query_embed = tf.expand_dims(query_embed, axis=1)[0]
+        query_embed = tf.expand_dims(query_embed, axis=1)
         query_embed = tf.tile(query_embed, [1, bs, 1])
 
-        #mask = mask.flatten(1)
         mask = tf.reshape(mask, [bs, -1])
 
         tgt = tf.zeros_like(query_embed)
-        memory = self.encoder(src, src_key_padding_mask=mask, pos=pos_embed, training=training)
 
-        print("------------")
-        print(tgt.shape)
-        print(query_embed.shape)
-        print(memory.shape)
-        print(pos_embed.shape)
-        print("------------")
+        memory = self.encoder(src, src_key_padding_mask=mask, pos=pos_embed, training=training)
         hs = self.decoder(tgt, memory, memory_key_padding_mask=mask,
-                          pos=pos_embed, query_pos=query_embed,training=training)
-      
-        return tf.transpose(hs, [0, 2, 1, 3]), tf.reshape(tf.transpose(memory, [1, 0, 2]), (bs, c, h, w))
-        
-    
+                          pos=pos_embed, query_pos=query_embed, training=training)
+
+        return  tf.transpose(hs, [0, 2, 1, 3]), tf.reshape(tf.transpose(memory, [1, 0, 2]), [bs, h, w, self.d_model])
+
+
 class TransformerEncoder(tf.keras.Model):
     def __init__(self, encoder_layer, num_layers, norm=None):       
         super().__init__()
@@ -97,17 +68,17 @@ class TransformerEncoder(tf.keras.Model):
         output = src
         for layer in self.t_layers:           
             output = layer(output, src_mask=mask,
-                           src_key_padding_mask=src_key_padding_mask, pos=pos)
+                           src_key_padding_mask=src_key_padding_mask, pos=pos, training=training)
             
         if self.norm is not None:
             output = self.norm(output)
 
         return output
-    
+
 
 class TransformerDecoder(tf.keras.Model):
-    def __init__(self, decoder_layer, num_layers, norm=None, return_intermediate=False):
-        super().__init__()
+    def __init__(self, decoder_layer, num_layers, norm=None, return_intermediate=False, **kwargs):
+        super().__init__(kwargs)
         self.t_layers = _get_clones(decoder_layer, num_layers)
         self.num_layers = num_layers
         self.norm = norm
@@ -122,7 +93,6 @@ class TransformerDecoder(tf.keras.Model):
                 query_pos = None, training=False):
        
         output = tgt
-
         intermediate = []
 
         for layer in self.t_layers:
@@ -131,6 +101,7 @@ class TransformerDecoder(tf.keras.Model):
                            tgt_key_padding_mask=tgt_key_padding_mask,
                            memory_key_padding_mask=memory_key_padding_mask,
                            pos=pos, query_pos=query_pos, training=training)
+          
             if self.return_intermediate:
                 intermediate.append(self.norm(output))
 
@@ -144,14 +115,16 @@ class TransformerDecoder(tf.keras.Model):
             return tf.stack(intermediate)
 
         return output.unsqueeze(0)
-    
-    
-class TransformerEncoderLayer(tf.keras.Model):
+
+
+class TransformerEncoderLayer(tf.keras.layers.Layer):
+   
     def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1,
-                 activation="relu", normalize_before=False):
+                 activation="relu", normalize_before=False, **kwargs):
         
-        super().__init__()
-        self.self_attn = tf.keras.layers.MultiHeadAttention(key_dim=d_model, num_heads=nhead, dropout=dropout)
+        super().__init__(**kwargs)
+        self.self_attn = tf.keras.layers.MultiHeadAttention(d_model, nhead, dropout=dropout, name='self_attn')
+
         # Implementation of Feedforward model
         self.linear1 = tf.keras.layers.Dense(units=dim_feedforward)
         self.dropout = tf.keras.layers.Dropout(dropout)
@@ -166,6 +139,7 @@ class TransformerEncoderLayer(tf.keras.Model):
         self.activation = _get_activation_fn(activation)
         self.normalize_before = normalize_before
         
+
     def with_pos_embed(self, tensor, pos):
         return tensor if pos is None else tensor + pos
     
@@ -177,12 +151,11 @@ class TransformerEncoderLayer(tf.keras.Model):
         
         q = k = self.with_pos_embed(src, pos)
         # TODO:  key_padding_mask=src_key_padding_mask
-        src2 = self.self_attn(query=q, key=k, value=src, attention_mask=src_mask)[0]
-        
+        src2 = self.self_attn(query=q, key=k, value=src, attention_mask=src_mask)
         src = src + self.dropout1(src2, training=training)
         src = self.norm1(src)
         
-        src2 = self.linear2(self.dropout(self.activation(self.linear1(src))))
+        src2 = self.linear2(self.dropout(self.activation(self.linear1(src)), training=training))
         src = src + self.dropout2(src2, training=training)
         src = self.norm2(src)
         
@@ -198,7 +171,7 @@ class TransformerEncoderLayer(tf.keras.Model):
         q = k = self.with_pos_embed(src2, pos)
         
         # TODO: key_padding_mask=src_key_padding_mask
-        src2 = self.self_attn(query=q, key=k, value=src2, attention_mask=src_mask)[0]
+        src2 = self.self_attn(query=q, key=k, value=src, attention_mask=src_mask)
         
         src = src + self.dropout1(src2, training=training)
         src2 = self.norm2(src)
@@ -217,16 +190,17 @@ class TransformerEncoderLayer(tf.keras.Model):
             return self.forward_pre(src, src_mask, src_key_padding_mask, pos, training=training)
         return self.forward_post(src, src_mask, src_key_padding_mask, pos, training=training)
 
-    
 
-class TransformerDecoderLayer(tf.keras.Model):
+class TransformerDecoderLayer(tf.keras.layers.Layer):
+
     def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1,
-                 activation="relu", normalize_before=False):
-        super().__init__()
+                 activation="relu", normalize_before=False, **kwargs):
+        super().__init__(kwargs)
 
-        self.self_attn = tf.keras.layers.MultiHeadAttention(key_dim=d_model, num_heads=nhead, dropout=dropout, name='D_self_atten')
-        self.multihead_attn = tf.keras.layers.MultiHeadAttention(key_dim=d_model, num_heads=nhead, dropout=dropout, name='D_multi_head_atten')
+        self.self_attn = tf.keras.layers.MultiHeadAttention(d_model, nhead, dropout=dropout, name='self_attn')
 
+        self.multihead_attn = MultiHeadAttention(d_model, nhead, dropout=dropout, name='multihead_attn')
+      
         # Implementation of Feedforward model
         self.linear1 = tf.keras.layers.Dense(units=dim_feedforward)
         self.dropout = tf.keras.layers.Dropout(dropout)
@@ -264,18 +238,13 @@ class TransformerDecoderLayer(tf.keras.Model):
         tgt = self.norm1(tgt)
         
         # TODO: need to figure out how to implement key_padding_mask=memory_key_padding_mask
-        print(tgt.shape)
-        print(query_pos.shape)
-        print("Query: ", self.with_pos_embed(tgt, query_pos).shape)
-        print("key: ", self.with_pos_embed(memory, pos).shape)
+        tgt2 = self.multihead_attn((self.with_pos_embed(tgt, query_pos),
+                                   self.with_pos_embed(memory, pos),
+                                   memory), attn_mask=memory_mask, key_padding_mask=memory_key_padding_mask, need_weights=False)
 
-        tgt2 = self.multihead_attn(query=self.with_pos_embed(tgt, query_pos),
-                                   key=self.with_pos_embed(memory, pos),
-                                   value=memory, attention_mask=memory_mask)
-       
         tgt = tgt + self.dropout2(tgt2, training=training)
         tgt = self.norm2(tgt)
-        tgt2 = self.linear2(self.dropout(self.activation(self.linear1(tgt))))
+        tgt2 = self.linear2(self.dropout(self.activation(self.linear1(tgt)), training=training))
         tgt = tgt + self.dropout3(tgt2,  training=training)
         tgt = self.norm3(tgt)
         return tgt
@@ -293,19 +262,18 @@ class TransformerDecoderLayer(tf.keras.Model):
         q = k = self.with_pos_embed(tgt2, query_pos)
 
         # TODO: need to figure out how to implement  key_padding_mask=tgt_key_padding_mask
-        tgt2 = self.self_attn(query=q, key=k, value=tgt2, attention_mask=tgt_mask, key_padding_mask=tgt_key_padding_mask)
-
+        tgt2 = self.self_attn((q, k, tgt2), attn_mask=tgt_mask, key_padding_mask=tgt_key_padding_mask, need_weights=False)
         tgt = tgt + self.dropout1(tgt2, training=training)
         tgt2 = self.norm2(tgt)
         
         # TODO: need to figure out how to implement key_padding_mask=memory_key_padding_mask
-        tgt2 = self.multihead_attn(query=self.with_pos_embed(tgt2, query_pos),
-                                   key=self.with_pos_embed(memory, pos),
-                                   value=memory, attention_mask=memory_mask)
+        tgt2 = self.multihead_attn((self.with_pos_embed(tgt2, query_pos),
+                                   self.with_pos_embed(memory, pos),
+                                   memory), attn_mask=memory_mask, key_padding_mask=memory_key_padding_mask)
 
         tgt = tgt + self.dropout2(tgt2, training=training)
         tgt2 = self.norm3(tgt)
-        tgt2 = self.linear2(self.dropout(self.activation(self.linear1(tgt2))))
+        tgt2 = self.linear2(self.dropout(self.activation(self.linear1(tgt2)), training=training))
         tgt = tgt + self.dropout3(tgt2, training=training)
         return tgt
 
@@ -323,6 +291,113 @@ class TransformerDecoderLayer(tf.keras.Model):
         return self.forward_post(tgt, memory, tgt_mask, memory_mask,
                                  tgt_key_padding_mask, memory_key_padding_mask, pos, query_pos, training)
 
+
+
+### SOURCE: https://github.com/Visual-Behavior/detr-tensorflow/blob/main/detr_tf/networks/transformer.py#L237
+class MultiHeadAttention(tf.keras.layers.Layer):
+    def __init__(self, model_dim, num_heads, dropout=0.0, **kwargs):
+        super().__init__(**kwargs)
+
+        self.model_dim = model_dim
+        self.num_heads = num_heads
+
+        assert model_dim % num_heads == 0
+        self.head_dim = model_dim // num_heads
+
+        self.dropout = tf.keras.layers.Dropout(rate=dropout)
+        
+
+    def build(self, input_shapes):
+        in_dim = sum([shape[-1] for shape in input_shapes[:3]])
+
+        self.in_proj_weight = self.add_weight(
+            name='in_proj_kernel', shape=(in_dim, self.model_dim),
+            initializer=tf.keras.initializers.GlorotUniform(), dtype=tf.float32, trainable=True )
+        self.in_proj_bias = self.add_weight(
+            name='in_proj_bias', shape=(in_dim,),
+            initializer=tf.keras.initializers.GlorotUniform(), dtype=tf.float32, trainable=True
+        )
+        self.out_proj_weight = self.add_weight(
+            name='out_proj_kernel', shape=(self.model_dim, self.model_dim),
+            initializer=tf.keras.initializers.GlorotUniform(), dtype=tf.float32, trainable=True
+        )
+        self.out_proj_bias = self.add_weight(
+            name='out_proj_bias', shape=(self.model_dim,),
+            initializer=tf.keras.initializers.GlorotUniform(), dtype=tf.float32, trainable=True
+        )
+
+    def call(self, inputs, attn_mask=None, key_padding_mask=None,
+             need_weights=True, training=False):
+
+        query, key, value = inputs
+
+        batch_size = tf.shape(query)[1]
+        target_len = tf.shape(query)[0]
+        source_len = tf.shape(key)[0]
+
+        W = self.in_proj_weight[:self.model_dim, :]
+        b = self.in_proj_bias[:self.model_dim]
+
+        WQ = tf.matmul(query, W, transpose_b=True) + b
+
+        W = self.in_proj_weight[self.model_dim:2*self.model_dim, :]
+        b = self.in_proj_bias[self.model_dim:2*self.model_dim]
+        WK = tf.matmul(key, W, transpose_b=True) + b
+
+        W = self.in_proj_weight[2*self.model_dim:, :]
+        b = self.in_proj_bias[2*self.model_dim:]
+        WV = tf.matmul(value, W, transpose_b=True) + b
+
+        WQ *= float(self.head_dim) ** -0.5
+        WQ = tf.reshape(WQ, [target_len, batch_size * self.num_heads, self.head_dim])
+        WQ = tf.transpose(WQ, [1, 0, 2])
+        
+        WK = tf.reshape(WK, [source_len, batch_size * self.num_heads, self.head_dim])
+        WK = tf.transpose(WK, [1, 0, 2])
+
+        WV = tf.reshape(WV, [source_len, batch_size * self.num_heads, self.head_dim])
+        WV = tf.transpose(WV, [1, 0, 2])
+        
+        attn_output_weights = tf.matmul(WQ, WK, transpose_b=True)
+
+        if attn_mask is not None:
+            attn_output_weights += attn_mask
+
+        """
+        if key_padding_mask is not None:
+            attn_output_weights = tf.reshape(attn_output_weights,
+                                [batch_size, self.num_heads, target_len, source_len])
+
+            key_padding_mask = tf.expand_dims(key_padding_mask, 1)
+            key_padding_mask = tf.expand_dims(key_padding_mask, 2)
+            key_padding_mask = tf.tile(key_padding_mask, [1, self.num_heads, target_len, 1])
+
+            #print("before attn_output_weights", attn_output_weights.shape)
+            attn_output_weights = tf.where(key_padding_mask,
+                                           tf.zeros_like(attn_output_weights) + float('-inf'),
+                                           attn_output_weights)
+            attn_output_weights = tf.reshape(attn_output_weights,
+                                [batch_size * self.num_heads, target_len, source_len])
+        """
+
+
+        attn_output_weights = tf.nn.softmax(attn_output_weights, axis=-1)
+        attn_output_weights = self.dropout(attn_output_weights, training=training)
+
+        attn_output = tf.matmul(attn_output_weights, WV)
+        attn_output = tf.transpose(attn_output, [1, 0, 2])
+        attn_output = tf.reshape(attn_output, [target_len, batch_size, self.model_dim])
+        attn_output = tf.matmul(attn_output, self.out_proj_weight,
+                                transpose_b=True) + self.out_proj_bias
+
+        if need_weights:
+            attn_output_weights = tf.reshape(attn_output_weights,
+                            [batch_size, self.num_heads, target_len, source_len])
+            # Retrun the average weight over the heads
+            avg_weights = tf.reduce_mean(attn_output_weights, axis=1)
+            return attn_output, avg_weights
+        
+        return attn_output
 
 
 def _get_clones(module, N):

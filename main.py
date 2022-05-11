@@ -1,16 +1,19 @@
 import tensorflow as tf
+import numpy as np
 import argparse
 from pathlib import Path
 from datasets import build_dataset, get_coco_api_from_dataset
 import tensorflow_datasets as tfds
 from random import sample, shuffle
 from datasets.transforms import pad_labels
+from datasets.coco import COCO_CLASS_NAME
 
 from model.detr import build 
+from engine import train_one_epoch 
 
 import PIL
 import matplotlib.pyplot as plt
-import utils 
+from utils.plot import numpy_bbox_to_image
 
 def get_args_parser():
     parser = argparse.ArgumentParser('Set transformer detector', add_help=False)
@@ -94,15 +97,17 @@ def main(args):
     valid_data = tf.data.Dataset.from_tensor_slices(dataset_val.ids)
   
     train_data = train_data.shuffle(1000)
- 
+    
     train_data = train_data.map(lambda idx: tf.numpy_function(dataset_train.__getitem__, [idx], [tf.float32, tf.float32, tf.int64]))
     valid_data = valid_data.map(lambda idx: tf.numpy_function(dataset_val.__getitem__, [idx], [tf.float32, tf.float32, tf.int64]))
 
     # pad images, boxes, and labels
     train_data = train_data.map(lambda imgs, boxes, labels: tf.numpy_function(pad_labels, [imgs, boxes, labels], [tf.float32, tf.float32, tf.int64]))
+    valid_data = valid_data.map(lambda imgs, boxes, labels: tf.numpy_function(pad_labels, [imgs, boxes, labels], [tf.float32, tf.float32, tf.int64]))
 
     # batch dataset
     train_data = train_data.batch(args.batch_size, drop_remainder=True)
+    valid_data = valid_data.batch(args.batch_size, drop_remainder=True)
 
     #### TRYING TO GET BATCHING TO WORK WITH VARIABLE-SIZED IMAGES BUT NO AVAIL
     #train_data = train_data.padded_batch(args.batch_size, padded_shapes=([[None], [None], [None]],[],[]), drop_remainder=True)
@@ -110,14 +115,27 @@ def main(args):
 
     # TODO: Display First 3 images in training data with their boxes
     for epoch, (img, box, label) in enumerate(train_data): 
-        image = tf.keras.preprocessing.image.array_to_img(img[0])
-        # image.show()
+        # image = numpy_bbox_to_image(np.array(img[0]), np.array(box[0]), np.array(label[0]), class_name=COCO_CLASS_NAME)
+        # plt.imshow(image)
+        # plt.show()
         break 
     
     #### Training Loop #### 
+    # Optimizers
+    backbone_optimizer = tf.keras.optimizers.Adam(learning_rate=args.lr_backbone, clipnorm=args.clip_max_norm)
+    transformers_optimizer = tf.keras.optimizers.Adam(learning_rate=args.lr, clipnorm=args.clip_max_norm)
+    fnn_optimizer = tf.keras.optimizers.Adam(learning_rate=args.lr, clipnorm=args.clip_max_norm)
+
+    optimizers = {
+        'backbone': backbone_optimizer,
+        'transformer': transformers_optimizer,
+        'fnn': fnn_optimizer}
+
     model, criterion, postprocess = build(args)
     for epoch, (img, box, label) in enumerate(train_data): 
-        model(img)
+        print(box.shape)
+        train_one_epoch(model, criterion, optimizers, img, box, label)
+        break
 
     #### Testing Loop #### 
 
