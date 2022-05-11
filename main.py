@@ -133,7 +133,6 @@ def main(args):
 
     model, criterion, postprocess = build(args)
     for epoch, (img, box, label) in enumerate(train_data): 
-        print(box.shape)
         train_one_epoch(model, criterion, optimizers, img, box, label)
         break
 
