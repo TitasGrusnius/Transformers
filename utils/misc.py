@@ -437,19 +437,20 @@ def init_distributed_mode(args):
 @torch.no_grad()
 def accuracy(output, target, topk=(1,)):
     """Computes the precision@k for the specified values of k"""
-    if target.numel() == 0:
+    if tf.size(target) == 0:
         return [torch.zeros([], device=output.device)]
     maxk = max(topk)
-    batch_size = target.size(0)
+    batch_size = target.shape[0]
 
-    _, pred = output.topk(maxk, 1, True, True)
-    pred = pred.t()
-    correct = pred.eq(target.view(1, -1).expand_as(pred))
+    _, pred = tf.math.top_k(output, k=maxk, sorted=True)
+    pred = tf.transpose(pred, perm=[1, 0])
 
+    correct = tf.math.equal(tf.cast(pred, tf.int32), tf.cast(tf.broadcast_to(tf.reshape(target, (1, -1)), pred.shape), tf.int32))
+    
     res = []
     for k in topk:
-        correct_k = correct[:k].view(-1).float().sum(0)
-        res.append(correct_k.mul_(100.0 / batch_size))
+        correct_k = tf.math.reduce_sum(tf.cast(tf.reshape(correct[:k], -1), tf.float32), 0)
+        res.append(tf.math.multiply(correct_k, 100.0 / batch_size))
     return res
 
 

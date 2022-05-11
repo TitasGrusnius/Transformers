@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from torch import nn
 """
 
+from numpy import dtype
 import tensorflow as tf
 
 import sys
@@ -138,18 +139,14 @@ class SetCriterion(tf.keras.Model):
 
         # convert target classes to class probabilities 
         target_classes_prop = tf.one_hot(target_classes, depth=num_classes, axis=2)
-        # print("prob: ", target_classes_prop.shape) 
-        # print(src_logits.shape)
-        # print(target_classes.shape)
-        # print(target_classes_o)
-        # print(target_classes_o[:, 0])
-
         loss_ce = tf.nn.weighted_cross_entropy_with_logits(target_classes_prop, tf.transpose(src_logits, perm=[0, 1, 2]), self.empty_weight)
         losses = {'loss_ce': loss_ce}
 
+        # NOTE: Ignoring this since log seems to be used
         if log:
             # TODO this should probably be a separate loss, not hacked in this one here
-            losses['class_error'] = 100 - accuracy(src_logits[idx], target_classes_o)[0]
+            src_logits_np = src_logits.numpy()
+            losses['class_error'] = 100 - accuracy(src_logits_np[idx], target_classes_o)[0]
         return losses
 
     #TJ-DONE
@@ -159,11 +156,11 @@ class SetCriterion(tf.keras.Model):
         This is not really a loss, it is intended for logging purposes only. It doesn't propagate gradients
         """
         pred_logits = tf.stop_gradient(outputs['pred_logits'])
-        tgt_lengths = tf.stop_gradient(tf.convert_to_tensor([len(v["labels"]) for v in targets]))
+        tgt_lengths = tf.stop_gradient(tf.convert_to_tensor([len(v) for v in labels]))
         # Count the number of predictions that are NOT "no-object" (which is the last class)
-        card_pred = tf.stop_gradient((pred_logits.argmax(-1) != pred_logits.shape[-1] - 1).sum(1))
-        card_err = tf.stop_gradient(tf.math.reduce_mean(tf.abs(card_pred.float()-tgt_lengths.float())))
-        losses = tf.stop_gradient({'cardinality_error': card_err})
+        card_pred = tf.reduce_sum(tf.cast((tf.math.argmax(pred_logits, -1) != pred_logits.shape[-1] - 1), tf.int32), axis=1)  
+        card_err = tf.stop_gradient(tf.cast(tf.math.reduce_mean(tf.abs(tf.cast(card_pred, dtype=tf.float32)-tf.cast(tgt_lengths, dtype=tf.float32))), tf.float32))
+        losses = {'cardinality_error': card_err}
         return losses
 
     #TJ-DONE
@@ -174,18 +171,19 @@ class SetCriterion(tf.keras.Model):
         """
         assert 'pred_boxes' in outputs
         idx = self._get_src_permutation_idx(indices)
-        src_boxes = outputs['pred_boxes'][idx]
-        target_boxes = tf.concat([t[i] for t, (_, i) in zip(boxes, indices)], axis=0)
+        outputs_np = outputs['pred_boxes'].numpy()
+        src_boxes = outputs_np[idx]
+        target_boxes = tf.concat([tf.gather(t, i, axis=0) for t, (_, i) in zip(boxes, indices)], axis=0)
 
         loss_bbox = tf.abs(src_boxes-target_boxes)
 
         losses = {}
-        losses['loss_bbox'] = loss_bbox.sum() / num_boxes
+        losses['loss_bbox'] = tf.reduce_sum(loss_bbox) / num_boxes
 
-        loss_giou = 1 - tf.matrix_diag(box_ops.generalized_box_iou(
+        loss_giou = 1 -  tf.compat.v1.matrix_diag(box_ops.generalized_box_iou(
             box_ops.box_cxcywh_to_xyxy(src_boxes),
             box_ops.box_cxcywh_to_xyxy(target_boxes)))
-        losses['loss_giou'] = loss_giou.sum() / num_boxes
+        losses['loss_giou'] = tf.reduce_sum(loss_giou) / num_boxes
         return losses
 
     #TJ-DONE
@@ -238,7 +236,7 @@ class SetCriterion(tf.keras.Model):
         # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
         if 'aux_outputs' in outputs:
             for i, aux_outputs in enumerate(outputs['aux_outputs']):
-                indices = self.matcher(aux_outputs, targets)
+                indices = self.matcher(aux_outputs, boxes, labels)
                 for loss in self.t_losses:
                     if loss == 'masks':
                         # Intermediate masks losses are too costly to compute, we ignore them.
@@ -247,7 +245,7 @@ class SetCriterion(tf.keras.Model):
                     if loss == 'labels':
                         # Logging is enabled only for the last layer
                         kwargs = {'log': False}
-                    l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_boxes, **kwargs)
+                    l_dict = self.get_loss(loss, aux_outputs, boxes, labels, indices, num_boxes, **kwargs)
                     l_dict = {k + f'_{i}': v for k, v in l_dict.items()}
                     losses.update(l_dict)
 
