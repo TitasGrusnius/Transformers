@@ -115,23 +115,36 @@ class SetCriterion(tf.keras.Model):
         empty_weight_np = empty_weight.numpy()
         empty_weight_np[-1] = self.eos_coef
         empty_weight = tf.convert_to_tensor(empty_weight_np, dtype=tf.float32)
-        empty_weight = tf.constant(empty_weight)
+        self.empty_weight = tf.constant(empty_weight)
        # self.register_buffer('empty_weight', empty_weight)
 
     #TJ-DONE
-    def loss_labels(self, outputs, targets, indices, num_boxes, log=True):
+    def loss_labels(self, outputs, boxes, labels, indices, num_boxes, log=True):
         """Classification loss (NLL)
         targets dicts must contain the key "labels" containing a tensor of dim [nb_target_boxes]
         """
         assert 'pred_logits' in outputs
         src_logits = outputs['pred_logits']
-
+        bs, _, num_classes = outputs['pred_logits'].shape
         idx = self._get_src_permutation_idx(indices)
-        target_classes_o = tf.concat([t["labels"][J] for t, (_, J) in zip(targets, indices)], axis=0)
-        target_classes = tf.fill(src_logits.shape[:2], self.num_classes)
-        target_classes[idx] = target_classes_o
 
-        loss_ce = tf.nn.softmax_cross_entropy_with_logits(target_classes, src_logits.transpose(1, 2))
+        target_classes_o = tf.concat([tf.gather(t, J, axis=0) for t, (_, J) in zip(labels, indices)], axis=0)
+        target_classes = tf.fill(src_logits.shape[:2], self.num_classes)
+    
+        target_classes_np = target_classes.numpy()
+        target_classes_np[idx] = target_classes_o[:, 0]
+
+        target_classes = tf.convert_to_tensor(target_classes_np)
+
+        # convert target classes to class probabilities 
+        target_classes_prop = tf.one_hot(target_classes, depth=num_classes, axis=2)
+        # print("prob: ", target_classes_prop.shape) 
+        # print(src_logits.shape)
+        # print(target_classes.shape)
+        # print(target_classes_o)
+        # print(target_classes_o[:, 0])
+
+        loss_ce = tf.nn.weighted_cross_entropy_with_logits(target_classes_prop, tf.transpose(src_logits, perm=[0, 1, 2]), self.empty_weight)
         losses = {'loss_ce': loss_ce}
 
         if log:
@@ -141,7 +154,7 @@ class SetCriterion(tf.keras.Model):
 
     #TJ-DONE
     #@tf.stop_gradient()
-    def loss_cardinality(self, outputs, targets, indices, num_boxes):
+    def loss_cardinality(self, outputs, boxes, labels, indices, num_boxes):
         """ Compute the cardinality error, ie the absolute error in the number of predicted non-empty boxes
         This is not really a loss, it is intended for logging purposes only. It doesn't propagate gradients
         """
@@ -154,7 +167,7 @@ class SetCriterion(tf.keras.Model):
         return losses
 
     #TJ-DONE
-    def loss_boxes(self, outputs, targets, indices, num_boxes):
+    def loss_boxes(self, outputs, boxes, labels, indices, num_boxes):
         """Compute the losses related to the bounding boxes, the L1 regression loss and the GIoU loss
            targets dicts must contain the key "boxes" containing a tensor of dim [nb_target_boxes, 4]
            The target boxes are expected in format (center_x, center_y, w, h), normalized by the image size.
@@ -162,7 +175,7 @@ class SetCriterion(tf.keras.Model):
         assert 'pred_boxes' in outputs
         idx = self._get_src_permutation_idx(indices)
         src_boxes = outputs['pred_boxes'][idx]
-        target_boxes = tf.concat([t['boxes'][i] for t, (_, i) in zip(targets, indices)], axis=0)
+        target_boxes = tf.concat([t[i] for t, (_, i) in zip(boxes, indices)], axis=0)
 
         loss_bbox = tf.abs(src_boxes-target_boxes)
 
@@ -178,27 +191,26 @@ class SetCriterion(tf.keras.Model):
     #TJ-DONE
     def _get_src_permutation_idx(self, indices):
         # permute predictions following indices
-        batch_idx = tf.concat([tf.fill(src, i) for i, (src, _) in enumerate(indices)], axis=0)
+        batch_idx = tf.concat([tf.fill(src.shape, i) for i, (src, _) in enumerate(indices)], axis=0)
         src_idx = tf.concat([src for (src, _) in indices], axis=0)
         return batch_idx, src_idx
 
     #TJ-DONE
     def _get_tgt_permutation_idx(self, indices):
         # permute targets following indices
-        batch_idx = tf.concat([tf.fill(tgt, i) for i, (_, tgt) in enumerate(indices)], axis=0)
+        batch_idx = tf.concat([tf.fill(tgt.shape, i) for i, (_, tgt) in enumerate(indices)], axis=0)
         tgt_idx = tf.concat([tgt for (_, tgt) in indices], axis=0)
         return batch_idx, tgt_idx
 
     #TJ-DONE (unchanged, I think this is good as is)
-    def get_loss(self, loss, outputs, targets, indices, num_boxes, **kwargs):
+    def get_loss(self, loss, outputs, boxes, labels, indices, num_boxes, **kwargs):
         loss_map = {
             'labels': self.loss_labels,
             'cardinality': self.loss_cardinality,
-            'boxes': self.loss_boxes,
-            'masks': self.loss_masks
+            'boxes': self.loss_boxes
         }
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
-        return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)
+        return loss_map[loss](outputs, boxes, labels, indices, num_boxes, **kwargs)
 
     #TJ-DONE WITH CAVEATS
     def call(self, outputs, boxes, labels):
@@ -214,17 +226,14 @@ class SetCriterion(tf.keras.Model):
         indices = self.matcher(outputs_without_aux, boxes, labels)
 
         # Compute the average number of target boxes accross all nodes, for normalization purposes
-        num_boxes = sum(len(t["labels"]) for t in targets)
+        num_boxes = sum(len(t) for t in labels)
         num_boxes = tf.convert_to_tensor([num_boxes], dtype=float)
-        #TJ- NOT SURE HOW TO DEAL WITH THE NEXT 2 LINES
-        if is_dist_avail_and_initialized():
-            torch.distributed.all_reduce(num_boxes)
-        num_boxes = tf.get_static_value(tf.clip_by_value(num_boxes / get_world_size(), clip_value_min=1))
+        num_boxes = tf.get_static_value(tf.clip_by_value(num_boxes / get_world_size(), clip_value_min=1, clip_value_max=tf.reduce_max(num_boxes / get_world_size())))
 
         # Compute all the requested losses
         losses = {}
         for loss in self.t_losses:
-            losses.update(self.get_loss(loss, outputs, targets, indices, num_boxes))
+            losses.update(self.get_loss(loss, outputs, boxes, labels, indices, num_boxes))
 
         # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
         if 'aux_outputs' in outputs:

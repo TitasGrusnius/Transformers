@@ -113,7 +113,7 @@ def resize(image, target, size, max_size=None):
 
     ratios = tuple(float(s) / float(s_orig) for s, s_orig in zip(rescaled_image.shape, image.size))
     ratio_width, ratio_height = ratios
-
+    
     target = target.copy()
     if "boxes" in target:
         boxes = target["boxes"]
