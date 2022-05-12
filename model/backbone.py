@@ -1,21 +1,15 @@
 """
 Backbone modules.
 """
-from collections import OrderedDict
-
 import sys
-from turtle import back
-from xml.etree.ElementInclude import include
 sys.path.insert(1, '/Users/ma/Documents/Brown/SP22/Deep_Learning/Transformers/')
 
 import tensorflow as tf
 from typing import Dict, List
 
-from utils.misc import NestedTensor, is_main_process
+from utils.misc import NestedTensor
 from .position_encoding import build_position_encoding
 
-# TODO: 
-# - check how to to set train backbone to false
 
 class FrozenBatchNorm2d(tf.keras.Model):
     """
@@ -27,11 +21,6 @@ class FrozenBatchNorm2d(tf.keras.Model):
 
     def __init__(self, n):
         super(FrozenBatchNorm2d, self).__init__()
-        # this needs to be changed
-        # self.register_buffer("weight", tf.ones(n))
-        # self.register_buffer("bias", tf.zeros(n))
-        # self.register_buffer("running_mean", tf.zeros(n))
-        # self.register_buffer("running_var", tf.ones(n))
         self.weight = tf.constant(tf.ones(n))
         self.bias = tf.constant(tf.zeros(n))
         self.running_mean = tf.constant(tf.zeros(n))
@@ -97,6 +86,12 @@ class BackboneBase(tf.keras.Model):
         out["layer4"] = NestedTensor(xs, masks)
         return out
 
+    def get_trainable_variables(self):
+        list = []
+        for layer in self.body.layers:
+            if not layer.name.startswith('bn'):
+                list.append(layer.trainable_variables)
+        return list 
 
 class Backbone(BackboneBase):
     """ResNet backbone with frozen BatchNorm."""
@@ -105,7 +100,6 @@ class Backbone(BackboneBase):
                  return_interm_layers: bool,
                  dilation: bool):
         
-        print(getattr(tf.keras.applications, name))
         backbone = getattr(tf.keras.applications, name).ResNet50(include_top=False, weights='imagenet')
         num_channels = 512 if name in ('resnet18', 'resnet34') else 2048
         super().__init__(backbone, train_backbone, num_channels, return_interm_layers)
