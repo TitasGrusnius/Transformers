@@ -2,8 +2,8 @@
 """
 Utilities for bounding box manipulation and GIoU.
 """
-import torch
-# from torchvision.ops.boxes import box_area
+from typing import Tuple
+
 import tensorflow as tf
 
 def box_cxcywh_to_xyxy(x):
@@ -85,28 +85,20 @@ def generalized_box_iou(boxes1, boxes2):
     return iou - (area - union) / area
 
 
-def masks_to_boxes(masks):
-    """Compute the bounding boxes around the provided masks
-
-    The masks should be in format [N, H, W] where N is the number of masks, (H, W) are the spatial dimensions.
-
-    Returns a [N, 4] tensors, with the boxes in xyxy format
+def merge(box_a: tf.Tensor, box_b: tf.Tensor) -> Tuple[tf.Tensor, tf.Tensor]:
     """
-    if masks.numel() == 0:
-        return torch.zeros((0, 4), device=masks.device)
-
-    h, w = masks.shape[-2:]
-
-    y = torch.arange(0, h, dtype=torch.float)
-    x = torch.arange(0, w, dtype=torch.float)
-    y, x = torch.meshgrid(y, x)
-
-    x_mask = (masks * x.unsqueeze(0))
-    x_max = x_mask.flatten(1).max(-1)[0]
-    x_min = x_mask.masked_fill(~(masks.bool()), 1e8).flatten(1).min(-1)[0]
-
-    y_mask = (masks * y.unsqueeze(0))
-    y_max = y_mask.flatten(1).max(-1)[0]
-    y_min = y_mask.masked_fill(~(masks.bool()), 1e8).flatten(1).min(-1)[0]
-
-    return torch.stack([x_min, y_min, x_max, y_max], 1)
+    Merged two set of boxes so that operations ca be run to compare them
+    Args:
+        box_a: A (tf.Tensor) list a bbox (a, 4) with a the number of bbox
+        box_b: A (tf.Tensor) list a bbox (b, 4) with b the number of bbox
+    Returns:
+        Return the two same tensor tiled: (a, b, 4)
+    """
+    A = tf.shape(box_a)[0] # Number of bbox in box_a
+    B = tf.shape(box_b)[0] # Number of bbox in box b
+    # Above Right Corner of Intersect Area
+    # (b, A, 2) -> (b, A, B, 2)
+    tiled_box_a = tf.tile(tf.expand_dims(box_a, axis=1), [1, B, 1])
+    # (b, B, 2) -> (b, A, B, 2)
+    tiled_box_b = tf.tile(tf.expand_dims(box_b, axis=0), [A, 1, 1])
+    return tiled_box_a, tiled_box_b

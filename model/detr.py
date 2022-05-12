@@ -1,12 +1,6 @@
 """
 DETR model and criterion classes.
 """
-"""
-TJ- These are commented out pytorch imports:
-import torch
-import torch.nn.functional as F
-from torch import nn
-"""
 
 from numpy import dtype
 import tensorflow as tf
@@ -17,17 +11,14 @@ sys.path.insert(1, '/Users/ma/Documents/Brown/SP22/Deep_Learning/Transformers/')
 #TJ-not sure how to deal with all of these imports
 from utils import box_ops
 from utils.misc import (NestedTensor, nested_tensor_from_tensor_list,
-                       accuracy, get_world_size, interpolate,
-                       is_dist_avail_and_initialized)
+                       accuracy, get_world_size)
 
 from .backbone import build_backbone
 from .matcher import build_matcher
 from .transformer import build_transformer
 
-#TJ-Not sure about this subclassing but I think they're equivalent
 class DETR(tf.keras.Model):
     """ This is the DETR module that performs object detection """
-    #TJ-DONE with caveats
     def __init__(self, backbone, transformer, num_classes, num_queries, aux_loss=False):
         """ Initializes the model.
         Parameters:
@@ -50,7 +41,7 @@ class DETR(tf.keras.Model):
         self.backbone = backbone
         self.aux_loss = aux_loss
 
-    #TJ-DONE 
+
     def call(self, samples: NestedTensor, training=False):
         """ The forward expects a NestedTensor, which consists of:
                - samples.tensor: batched images, of shape [batch_size x 3 x H x W]
@@ -81,8 +72,6 @@ class DETR(tf.keras.Model):
             out['aux_outputs'] = self._set_aux_loss(outputs_class, outputs_coord)
         return out
 
-    #TJ-NOT DONE, not sure what this decorator should be
-    #@torch.jit.unused
     def _set_aux_loss(self, outputs_class, outputs_coord):
         # this is a workaround to make torchscript happy, as torchscript
         # doesn't support dictionary with non-homogeneous values, such
@@ -90,13 +79,21 @@ class DETR(tf.keras.Model):
         return [{'pred_logits': a, 'pred_boxes': b}
                 for a, b in zip(outputs_class[:-1], outputs_coord[:-1])]
 
+    def get_trainable_weights(self):
+        weights = []
+        weights += self.class_embed.trainable_weights  
+        weights += self.bbox_embed.trainable_weights  
+        weights += self.query_embed.trainable_weights  
+        weights += self.input_proj.trainable_weights  
+        return weights
+
+
 class SetCriterion(tf.keras.Model):
     """ This class computes the loss for DETR.
     The process happens in two steps:
         1) we compute hungarian assignment between ground truth boxes and the outputs of the model
         2) we supervise each pair of matched ground-truth / prediction (supervise class and box)
     """
-    #TJ-DONE
     def __init__(self, num_classes, matcher, weight_dict, eos_coef, losses):
         """ Create the criterion.
         Parameters:
@@ -117,9 +114,8 @@ class SetCriterion(tf.keras.Model):
         empty_weight_np[-1] = self.eos_coef
         empty_weight = tf.convert_to_tensor(empty_weight_np, dtype=tf.float32)
         self.empty_weight = tf.constant(empty_weight)
-       # self.register_buffer('empty_weight', empty_weight)
 
-    #TJ-DONE
+
     def loss_labels(self, outputs, boxes, labels, indices, num_boxes, log=True):
         """Classification loss (NLL)
         targets dicts must contain the key "labels" containing a tensor of dim [nb_target_boxes]
@@ -149,21 +145,19 @@ class SetCriterion(tf.keras.Model):
             losses['class_error'] = 100 - accuracy(src_logits_np[idx], target_classes_o)[0]
         return losses
 
-    #TJ-DONE
-    #@tf.stop_gradient()
     def loss_cardinality(self, outputs, boxes, labels, indices, num_boxes):
         """ Compute the cardinality error, ie the absolute error in the number of predicted non-empty boxes
         This is not really a loss, it is intended for logging purposes only. It doesn't propagate gradients
         """
-        pred_logits = tf.stop_gradient(outputs['pred_logits'])
-        tgt_lengths = tf.stop_gradient(tf.convert_to_tensor([len(v) for v in labels]))
+        pred_logits = outputs['pred_logits']
+        tgt_lengths = tf.convert_to_tensor([len(v) for v in labels])
         # Count the number of predictions that are NOT "no-object" (which is the last class)
         card_pred = tf.reduce_sum(tf.cast((tf.math.argmax(pred_logits, -1) != pred_logits.shape[-1] - 1), tf.int32), axis=1)  
-        card_err = tf.stop_gradient(tf.cast(tf.math.reduce_mean(tf.abs(tf.cast(card_pred, dtype=tf.float32)-tf.cast(tgt_lengths, dtype=tf.float32))), tf.float32))
+        card_err = tf.cast(tf.math.reduce_mean(tf.abs(tf.cast(card_pred, dtype=tf.float32)-tf.cast(tgt_lengths, dtype=tf.float32))), tf.float32)
         losses = {'cardinality_error': card_err}
         return losses
 
-    #TJ-DONE
+
     def loss_boxes(self, outputs, boxes, labels, indices, num_boxes):
         """Compute the losses related to the bounding boxes, the L1 regression loss and the GIoU loss
            targets dicts must contain the key "boxes" containing a tensor of dim [nb_target_boxes, 4]
@@ -186,21 +180,18 @@ class SetCriterion(tf.keras.Model):
         losses['loss_giou'] = tf.reduce_sum(loss_giou) / num_boxes
         return losses
 
-    #TJ-DONE
     def _get_src_permutation_idx(self, indices):
         # permute predictions following indices
         batch_idx = tf.concat([tf.fill(src.shape, i) for i, (src, _) in enumerate(indices)], axis=0)
         src_idx = tf.concat([src for (src, _) in indices], axis=0)
         return batch_idx, src_idx
 
-    #TJ-DONE
     def _get_tgt_permutation_idx(self, indices):
         # permute targets following indices
         batch_idx = tf.concat([tf.fill(tgt.shape, i) for i, (_, tgt) in enumerate(indices)], axis=0)
         tgt_idx = tf.concat([tgt for (_, tgt) in indices], axis=0)
         return batch_idx, tgt_idx
 
-    #TJ-DONE (unchanged, I think this is good as is)
     def get_loss(self, loss, outputs, boxes, labels, indices, num_boxes, **kwargs):
         loss_map = {
             'labels': self.loss_labels,
@@ -210,7 +201,6 @@ class SetCriterion(tf.keras.Model):
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
         return loss_map[loss](outputs, boxes, labels, indices, num_boxes, **kwargs)
 
-    #TJ-DONE WITH CAVEATS
     def call(self, outputs, boxes, labels):
         """ This performs the loss computation.
         Parameters:
@@ -251,12 +241,9 @@ class SetCriterion(tf.keras.Model):
 
         return losses
 
-#TJ-DONE
-#TJ-Not sure about this subclassing but I think they're equivalent
 class PostProcess(tf.keras.Model):
     """ This module converts the model's output into the format expected by the coco api"""
-    #TJ-DONE
-#    @tf.stop_gradient()
+    # @tf.stop_gradient()
     def call(self, outputs, target_sizes):
         """ Perform the computation
         Parameters:
@@ -265,22 +252,22 @@ class PostProcess(tf.keras.Model):
                           For evaluation, this must be the original image size (before any data augmentation)
                           For visualization, this should be the image size after data augment, but before padding
         """
-        out_logits, out_bbox = tf.stop_gradient(outputs['pred_logits'], outputs['pred_boxes'])
+        out_logits, out_bbox = outputs['pred_logits'], outputs['pred_boxes']
 
         assert len(out_logits) == len(target_sizes)
         assert target_sizes.shape[1] == 2
 
-        prob = tf.stop_gradient(tf.nn.softmax(out_logits, axis=-1))
-        scores, labels = tf.stop_gradient(prob[..., :-1].max(-1))
+        prob = tf.nn.softmax(out_logits, axis=-1)
+        scores, labels = prob[..., :-1].max(-1)
 
         # convert to [x0, y0, x1, y1] format
-        boxes = tf.stop_gradient(box_ops.box_cxcywh_to_xyxy(out_bbox))
+        boxes = box_ops.box_cxcywh_to_xyxy(out_bbox)
         # and from relative [0, 1] to absolute [0, height] coordinates
-        img_h, img_w = tf.stop_gradient(target_sizes.unbind(1))
-        scale_fct = tf.stop_gradient(tf.stack([img_w, img_h, img_w, img_h], axis=1))
-        boxes = tf.stop_gradient(boxes * scale_fct[:, None, :])
+        img_h, img_w = target_sizes.unbind(1)
+        scale_fct = tf.stack([img_w, img_h, img_w, img_h], axis=1)
+        boxes = boxes * scale_fct[:, None, :]
 
-        results = tf.stop_gradient([{'scores': s, 'labels': l, 'boxes': b} for s, l, b in zip(scores, labels, boxes)])
+        results =[{'scores': s, 'labels': l, 'boxes': b} for s, l, b in zip(scores, labels, boxes)]
 
         return results
 

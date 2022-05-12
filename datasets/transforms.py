@@ -6,13 +6,9 @@ import random
 import tensorflow as tf
 
 from utils.box_ops import box_xyxy_to_cxcywh
-from utils.misc import interpolate
-
-# Unsure of line 243
 
 
 def crop(image, target, region):
-    # cropped_image = F.crop(image, *region)
     i, j, h, w = region
     cropped_image = tf.image.crop_to_bounding_box(image, offset_height=i, offset_width=j, target_height=h, target_width=w)
 
@@ -127,10 +123,6 @@ def resize(image, target, size, max_size=None):
 
     h, w = size
     target["size"] = tf.constant([h, w])
-
-    if "masks" in target:
-        target['masks'] = interpolate(
-            target['masks'][:, None].float(), size, mode="nearest")[:, 0] > 0.5
 
     return rescaled_image, target
 

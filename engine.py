@@ -1,14 +1,9 @@
-import tensorflow as tf
 import math
-import os
 import sys
-from typing import Iterable
 
+import tensorflow as tf
 import utils.misc as utils
-#from datasets.coco_eval import CocoEvaluator
-#from datasets.panoptic_eval import PanopticEvaluator
 
-#@tf.function
 def train_one_epoch(model, criterion, optimizers, images, boxes, labels):
 
     with tf.GradientTape() as tape:
@@ -25,18 +20,31 @@ def train_one_epoch(model, criterion, optimizers, images, boxes, labels):
         losses_reduced_scaled = sum(loss_dict_reduced_scaled.values())
 
         loss_value = losses_reduced_scaled.numpy()
-
-        print(loss_value)
-        if not math.isfinite(loss_value):
-            print("Loss is {}, stopping training".format(loss_value))
+        loss_reduced = tf.reduce_mean(tf.reduce_mean(tf.reduce_mean(loss_value, axis=2), axis=1))
+       
+        if not math.isfinite(loss_reduced):
+            print("Loss is {}, stopping training".format(loss_reduced))
             print(loss_dict_reduced)
             sys.exit(1)
 
+        trainable_variables = []
+        backbone_trainable_variables = model.backbone.layers[0].get_trainable_variables()
+        transformer_trainable_variables = model.transformer.trainable_weights
+        fnn_trainable_variables = model.get_trainable_weights()
+        trainable_variables = backbone_trainable_variables  + transformer_trainable_variables + fnn_trainable_variables
+    
+    gradients = tape.gradient(loss_reduced, fnn_trainable_variables)
 
-    # # Compute gradient for each part of the network
-    # gradient_steps = gather_gradient(model, optimizers, total_loss, tape, config, log)
+    print(gradients)
+    # fnn_gradient = gradients[len(backbone_trainable_variables)+len(transformer_trainable_variables):]
+    # backbone_gradient = gradients[:len(backbone_trainable_variables)]
+    # transformer_gradient = gradients[len(backbone_trainable_variables):len(backbone_trainable_variables)+len(transformer_trainable_variables)]
+  
+    # Update weights
+    optimizers['fnn'].apply_gradients(zip(gradients, fnn_trainable_variables))
+    # optimizers['transformer'].apply_gradients(zip(transformer_gradient, transformer_trainable_variables))
+    # optimizers['backbone'].apply_gradients(zip(backbone_gradient, backbone_trainable_variables))
 
-    return losses
 
 
 # @tf.stop_gradient()

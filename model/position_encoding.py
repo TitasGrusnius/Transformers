@@ -1,13 +1,10 @@
 """
 Various positional encodings for the transformer.
 """
-import math
 import sys
-import numpy as np
-from numpy import dtype 
-
 sys.path.insert(1, '/Users/ma/Documents/Brown/SP22/Deep_Learning/Transformers/')
 
+import numpy as np
 import tensorflow as tf
 from utils.misc import NestedTensor
 
@@ -73,16 +70,12 @@ class PositionEmbeddingLearned(tf.keras.Model):
         self.reset_parameters()
 
     def reset_parameters(self):
-        # nn.init.uniform_(self.row_embed.weight)
-        # nn.init.uniform_(self.col_embed.weight)
         self.row_embed = tf.random.normal(self.row_embed.shape)
         self.col_embed = tf.random.normal(self.col_embed.shape)
 
     def call(self, tensor_list: NestedTensor):
         x = tensor_list.tensors
         h, w = x.shape[-2:]
-        # i = torch.arange(w, device=x.device)
-        # j = torch.arange(h, device=x.device)
         # again has no attribute device
         i = tf.range(w)
         j = tf.range(h)
