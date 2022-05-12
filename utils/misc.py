@@ -7,11 +7,10 @@ Mostly copy-paste from torchvision references.
 import os
 import subprocess
 import time
-from collections import defaultdict, deque
 import datetime
-import pickle
-from packaging import version
+
 from typing import Optional, List
+from collections import defaultdict, deque
 
 import tensorflow as tf
 
@@ -34,20 +33,29 @@ class SmoothedValue(object):
         self.count += n
         self.total += value * n
 
+    # this process will always return None
     def synchronize_between_processes(self):
         """
         Warning: does not synchronize the deque!
         """
+        # if not is_dist_avail_and_initialized():
+        #     return
+        # t = tf.Tensor([self.count, self.total], dtype=tf.float64)
+        # # dist.barrier()
+        # # dist.all_reduce(t)
+        # t = t.numpy().tolist()
+        # self.count = int(t[0])
+        # self.total = t[1]
         return
-        
+
     @property
     def median(self):
-        d = tf.tensor(list(self.deque))
+        d = tf.constant(list(self.deque))
         return d.median().item()
 
     @property
     def avg(self):
-        d = tf.tensor(list(self.deque), dtype=tf.float32)
+        d = tf.constant(list(self.deque), dtype=tf.float32)
         return d.mean().item()
 
     @property
@@ -69,6 +77,20 @@ class SmoothedValue(object):
             global_avg=self.global_avg,
             max=self.max,
             value=self.value)
+
+
+def all_gather(data):
+    """
+    Run all_gather on arbitrary picklable data (not necessarily tensors)
+    Args:
+        data: any picklable object
+    Returns:
+        list[data]: list of data gathered from each rank
+    """
+
+    # since we will not be running on distributed systems, we do not need the rest of the logic
+    world_size = get_world_size()
+    return [data]
 
 
 def reduce_dict(input_dict, average=True):
@@ -129,7 +151,7 @@ class MetricLogger(object):
         iter_time = SmoothedValue(fmt='{avg:.4f}')
         data_time = SmoothedValue(fmt='{avg:.4f}')
         space_fmt = ':' + str(len(str(len(iterable)))) + 'd'
-        if torch.cuda.is_available():
+        if tf.test.is_gpu_available(cuda_only=True):
             log_msg = self.delimiter.join([
                 header,
                 '[{0' + space_fmt + '}/{1}]',
@@ -156,12 +178,11 @@ class MetricLogger(object):
             if i % print_freq == 0 or i == len(iterable) - 1:
                 eta_seconds = iter_time.global_avg * (len(iterable) - i)
                 eta_string = str(datetime.timedelta(seconds=int(eta_seconds)))
-                if torch.cuda.is_available():
+                if tf.test.is_gpu_available(cuda_only=True):
                     print(log_msg.format(
                         i, len(iterable), eta=eta_string,
                         meters=str(self),
-                        time=str(iter_time), data=str(data_time),
-                        memory=torch.cuda.max_memory_allocated() / MB))
+                        time=str(iter_time), data=str(data_time)))
                 else:
                     print(log_msg.format(
                         i, len(iterable), eta=eta_string,
@@ -180,6 +201,7 @@ def get_sha():
 
     def _run(command):
         return subprocess.check_output(command, cwd=cwd).decode('ascii').strip()
+
     sha = 'N/A'
     diff = "clean"
     branch = 'N/A'
@@ -193,7 +215,6 @@ def get_sha():
         pass
     message = f"sha: {sha}, status: {diff}, branch: {branch}"
     return message
-
 
 
 def collate_fn(images, boxes, labels):
@@ -217,7 +238,6 @@ class NestedTensor(object):
         self.mask = mask
 
     def to(self, device):
-        # type: () -> NestedTensor # noqa
         cast_tensor = self.tensors.to(device)
         mask = self.mask
         if mask is not None:
@@ -252,7 +272,7 @@ def nested_tensor_from_tensor_list(tensor_list: List[tf.Tensor]):
             m_np = m.numpy()
             m_np[: img.shape[1], :img.shape[2]] = False
             m = tf.convert_to_tensor(m_np, dtype=tf.bool)
-        
+
     else:
         raise ValueError('not supported')
     return NestedTensor(tensor, mask)
@@ -266,6 +286,7 @@ def get_rank():
     return 0
 
 
+# this function will always return True
 def is_main_process():
     return get_rank() == 0
 
@@ -281,8 +302,9 @@ def accuracy(output, target, topk=(1,)):
     _, pred = tf.math.top_k(output, k=maxk, sorted=True)
     pred = tf.transpose(pred, perm=[1, 0])
 
-    correct = tf.math.equal(tf.cast(pred, tf.int32), tf.cast(tf.broadcast_to(tf.reshape(target, (1, -1)), pred.shape), tf.int32))
-    
+    correct = tf.math.equal(tf.cast(pred, tf.int32),
+                            tf.cast(tf.broadcast_to(tf.reshape(target, (1, -1)), pred.shape), tf.int32))
+
     res = []
     for k in topk:
         correct_k = tf.math.reduce_sum(tf.cast(tf.reshape(correct[:k], -1), tf.float32), 0)
