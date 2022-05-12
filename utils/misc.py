@@ -14,15 +14,16 @@ from packaging import version
 from typing import Optional, List
 
 import tensorflow as tf
-import torch
-import torch.distributed as dist
-from torch import Tensor
+# import torch
+# import torch.distributed as dist
+from tensorflow import Tensor
+
 
 # needed due to empty tensor bug in pytorch and torchvision 0.5
-import torchvision
-if version.parse(torchvision.__version__) < version.parse('0.7'):
-    from torchvision.ops import _new_empty_tensor
-    from torchvision.ops.misc import _output_size
+# import torchvision
+# if version.parse(torchvision.__version__) < version.parse('0.7'):
+#     from torchvision.ops import _new_empty_tensor
+#     from torchvision.ops.misc import _output_size
 
 
 class SmoothedValue(object):
@@ -43,27 +44,29 @@ class SmoothedValue(object):
         self.count += n
         self.total += value * n
 
+    # this process will always return None
     def synchronize_between_processes(self):
         """
         Warning: does not synchronize the deque!
         """
-        if not is_dist_avail_and_initialized():
-            return
-        t = torch.tensor([self.count, self.total], dtype=torch.float64, device='cuda')
-        dist.barrier()
-        dist.all_reduce(t)
-        t = t.tolist()
-        self.count = int(t[0])
-        self.total = t[1]
+        # if not is_dist_avail_and_initialized():
+        #     return
+        # t = tf.Tensor([self.count, self.total], dtype=tf.float64)
+        # # dist.barrier()
+        # # dist.all_reduce(t)
+        # t = t.numpy().tolist()
+        # self.count = int(t[0])
+        # self.total = t[1]
+        return
 
     @property
     def median(self):
-        d = torch.tensor(list(self.deque))
+        d = tf.constant(list(self.deque))
         return d.median().item()
 
     @property
     def avg(self):
-        d = torch.tensor(list(self.deque), dtype=torch.float32)
+        d = tf.constant(list(self.deque), dtype=tf.float32)
         return d.mean().item()
 
     @property
@@ -95,39 +98,42 @@ def all_gather(data):
     Returns:
         list[data]: list of data gathered from each rank
     """
+
+    # since we will not be running on distributed systems, we do not need the rest of the logic
     world_size = get_world_size()
-    if world_size == 1:
-        return [data]
-
-    # serialized to a Tensor
-    buffer = pickle.dumps(data)
-    storage = torch.ByteStorage.from_buffer(buffer)
-    tensor = torch.ByteTensor(storage).to("cuda")
-
-    # obtain Tensor size of each rank
-    local_size = torch.tensor([tensor.numel()], device="cuda")
-    size_list = [torch.tensor([0], device="cuda") for _ in range(world_size)]
-    dist.all_gather(size_list, local_size)
-    size_list = [int(size.item()) for size in size_list]
-    max_size = max(size_list)
-
-    # receiving Tensor from all ranks
-    # we pad the tensor because torch all_gather does not support
-    # gathering tensors of different shapes
-    tensor_list = []
-    for _ in size_list:
-        tensor_list.append(torch.empty((max_size,), dtype=torch.uint8, device="cuda"))
-    if local_size != max_size:
-        padding = torch.empty(size=(max_size - local_size,), dtype=torch.uint8, device="cuda")
-        tensor = torch.cat((tensor, padding), dim=0)
-    dist.all_gather(tensor_list, tensor)
-
-    data_list = []
-    for size, tensor in zip(size_list, tensor_list):
-        buffer = tensor.cpu().numpy().tobytes()[:size]
-        data_list.append(pickle.loads(buffer))
-
-    return data_list
+    return [data]
+    # if world_size == 1:
+    #     return [data]
+    #
+    # # serialized to a Tensor
+    # buffer = pickle.dumps(data)
+    # storage = torch.ByteStorage.from_buffer(buffer)
+    # tensor = torch.ByteTensor(storage).to("cuda")
+    #
+    # # obtain Tensor size of each rank
+    # local_size = tf.Tensor([tensor.numel()])
+    # size_list = [tf.Tensor([0]) for _ in range(world_size)]
+    # dist.all_gather(size_list, local_size)
+    # size_list = [int(size.item()) for size in size_list]
+    # max_size = max(size_list)
+    #
+    # # receiving Tensor from all ranks
+    # # we pad the tensor because torch all_gather does not support
+    # # gathering tensors of different shapes
+    # tensor_list = []
+    # for _ in size_list:
+    #     tensor_list.append(torch.empty((max_size,), dtype=torch.uint8, device="cuda"))
+    # if local_size != max_size:
+    #     padding = torch.empty(size=(max_size - local_size,), dtype=torch.uint8, device="cuda")
+    #     tensor = torch.cat((tensor, padding), dim=0)
+    # dist.all_gather(tensor_list, tensor)
+    #
+    # data_list = []
+    # for size, tensor in zip(size_list, tensor_list):
+    #     buffer = tensor.cpu().numpy().tobytes()[:size]
+    #     data_list.append(pickle.loads(buffer))
+    #
+    # return data_list
 
 
 def reduce_dict(input_dict, average=True):
@@ -142,19 +148,19 @@ def reduce_dict(input_dict, average=True):
     world_size = get_world_size()
     if world_size < 2:
         return input_dict
-    with torch.no_grad():
-        names = []
-        values = []
-        # sort the keys so that they are consistent across processes
-        for k in sorted(input_dict.keys()):
-            names.append(k)
-            values.append(input_dict[k])
-        values = torch.stack(values, dim=0)
-        dist.all_reduce(values)
-        if average:
-            values /= world_size
-        reduced_dict = {k: v for k, v in zip(names, values)}
-    return reduced_dict
+    # with tf.stop_gradient():
+    #     names = []
+    #     values = []
+    #     # sort the keys so that they are consistent across processes
+    #     for k in sorted(input_dict.keys()):
+    #         names.append(k)
+    #         values.append(input_dict[k])
+    #     values = tf.stack(values, dim=0)
+    #     dist.all_reduce(values)
+    #     if average:
+    #         values /= world_size
+    #     reduced_dict = {k: v for k, v in zip(names, values)}
+    # return reduced_dict
 
 
 class MetricLogger(object):
@@ -164,7 +170,7 @@ class MetricLogger(object):
 
     def update(self, **kwargs):
         for k, v in kwargs.items():
-            if isinstance(v, torch.Tensor):
+            if isinstance(v, tf.Tensor):
                 v = v.item()
             assert isinstance(v, (float, int))
             self.meters[k].update(v)
@@ -201,7 +207,7 @@ class MetricLogger(object):
         iter_time = SmoothedValue(fmt='{avg:.4f}')
         data_time = SmoothedValue(fmt='{avg:.4f}')
         space_fmt = ':' + str(len(str(len(iterable)))) + 'd'
-        if torch.cuda.is_available():
+        if tf.test.is_gpu_available(cuda_only=True):
             log_msg = self.delimiter.join([
                 header,
                 '[{0' + space_fmt + '}/{1}]',
@@ -228,12 +234,11 @@ class MetricLogger(object):
             if i % print_freq == 0 or i == len(iterable) - 1:
                 eta_seconds = iter_time.global_avg * (len(iterable) - i)
                 eta_string = str(datetime.timedelta(seconds=int(eta_seconds)))
-                if torch.cuda.is_available():
+                if tf.test.is_gpu_available(cuda_only=True):
                     print(log_msg.format(
                         i, len(iterable), eta=eta_string,
                         meters=str(self),
-                        time=str(iter_time), data=str(data_time),
-                        memory=torch.cuda.max_memory_allocated() / MB))
+                        time=str(iter_time), data=str(data_time)))
                 else:
                     print(log_msg.format(
                         i, len(iterable), eta=eta_string,
@@ -252,6 +257,7 @@ def get_sha():
 
     def _run(command):
         return subprocess.check_output(command, cwd=cwd).decode('ascii').strip()
+
     sha = 'N/A'
     diff = "clean"
     branch = 'N/A'
@@ -265,7 +271,6 @@ def get_sha():
         pass
     message = f"sha: {sha}, status: {diff}, branch: {branch}"
     return message
-
 
 
 def collate_fn(images, boxes, labels):
@@ -328,7 +333,7 @@ def nested_tensor_from_tensor_list(tensor_list: List[Tensor]):
             m_np = m.numpy()
             m_np[: img.shape[1], :img.shape[2]] = False
             m = tf.convert_to_tensor(m_np, dtype=tf.bool)
-        
+
     else:
         raise ValueError('not supported')
     return NestedTensor(tensor, mask)
@@ -336,33 +341,35 @@ def nested_tensor_from_tensor_list(tensor_list: List[Tensor]):
 
 # _onnx_nested_tensor_from_tensor_list() is an implementation of
 # nested_tensor_from_tensor_list() that is supported by ONNX tracing.
-@torch.jit.unused
-def _onnx_nested_tensor_from_tensor_list(tensor_list: List[Tensor]) -> NestedTensor:
-    max_size = []
-    for i in range(tensor_list[0].dim()):
-        max_size_i = torch.max(torch.stack([img.shape[i] for img in tensor_list]).to(torch.float32)).to(torch.int64)
-        max_size.append(max_size_i)
-    max_size = tuple(max_size)
 
-    # work around for
-    # pad_img[: img.shape[0], : img.shape[1], : img.shape[2]].copy_(img)
-    # m[: img.shape[1], :img.shape[2]] = False
-    # which is not yet supported in onnx
-    padded_imgs = []
-    padded_masks = []
-    for img in tensor_list:
-        padding = [(s1 - s2) for s1, s2 in zip(max_size, tuple(img.shape))]
-        padded_img = torch.nn.functional.pad(img, (0, padding[2], 0, padding[1], 0, padding[0]))
-        padded_imgs.append(padded_img)
-
-        m = torch.zeros_like(img[0], dtype=torch.int, device=img.device)
-        padded_mask = torch.nn.functional.pad(m, (0, padding[2], 0, padding[1]), "constant", 1)
-        padded_masks.append(padded_mask.to(torch.bool))
-
-    tensor = torch.stack(padded_imgs)
-    mask = torch.stack(padded_masks)
-
-    return NestedTensor(tensor, mask=mask)
+# @torch.jit.unused tells compiler to ignore this function so we comment it out
+# @torch.jit.unused
+# def _onnx_nested_tensor_from_tensor_list(tensor_list: List[Tensor]) -> NestedTensor:
+#     max_size = []
+#     for i in range(tensor_list[0].dim()):
+#         max_size_i = tf.max(tf.stack([img.shape[i] for img in tensor_list]).to(tf.float32)).to(tf.int64)
+#         max_size.append(max_size_i)
+#     max_size = tuple(max_size)
+#
+#     # work around for
+#     # pad_img[: img.shape[0], : img.shape[1], : img.shape[2]].copy_(img)
+#     # m[: img.shape[1], :img.shape[2]] = False
+#     # which is not yet supported in onnx
+#     padded_imgs = []
+#     padded_masks = []
+#     for img in tensor_list:
+#         padding = [(s1 - s2) for s1, s2 in zip(max_size, tuple(img.shape))]
+#         padded_img = torch.nn.functional.pad(img, (0, padding[2], 0, padding[1], 0, padding[0]))
+#         padded_imgs.append(padded_img)
+#
+#         m = torch.zeros_like(img[0], dtype=torch.int, device=img.device)
+#         padded_mask = torch.nn.functional.pad(m, (0, padding[2], 0, padding[1]), "constant", 1)
+#         padded_masks.append(padded_mask.to(torch.bool))
+#
+#     tensor = torch.stack(padded_imgs)
+#     mask = torch.stack(padded_masks)
+#
+#     return NestedTensor(tensor, mask=mask)
 
 
 def setup_for_distributed(is_master):
@@ -381,25 +388,24 @@ def setup_for_distributed(is_master):
 
 
 def is_dist_avail_and_initialized():
-    if not dist.is_available():
-        return False
-    if not dist.is_initialized():
-        return False
-    return True
+    return False
 
 
 def get_world_size():
-    if not is_dist_avail_and_initialized():
-        return 1
-    return dist.get_world_size()
+    # if not is_dist_avail_and_initialized():
+    #     return 1
+    # return dist.get_world_size()
+    return 1
 
 
 def get_rank():
-    if not is_dist_avail_and_initialized():
-        return 0
-    return dist.get_rank()
+    # if not is_dist_avail_and_initialized():
+    #     return 0
+    # return dist.get_rank()
+    return 0
 
 
+# this function will always return True
 def is_main_process():
     return get_rank() == 0
 
@@ -445,8 +451,9 @@ def accuracy(output, target, topk=(1,)):
     _, pred = tf.math.top_k(output, k=maxk, sorted=True)
     pred = tf.transpose(pred, perm=[1, 0])
 
-    correct = tf.math.equal(tf.cast(pred, tf.int32), tf.cast(tf.broadcast_to(tf.reshape(target, (1, -1)), pred.shape), tf.int32))
-    
+    correct = tf.math.equal(tf.cast(pred, tf.int32),
+                            tf.cast(tf.broadcast_to(tf.reshape(target, (1, -1)), pred.shape), tf.int32))
+
     res = []
     for k in topk:
         correct_k = tf.math.reduce_sum(tf.cast(tf.reshape(correct[:k], -1), tf.float32), 0)
